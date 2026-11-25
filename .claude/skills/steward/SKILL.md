@@ -22,8 +22,12 @@ missing/incomplete evidence, or Code Review feedback. Don't approve or merge.
    trap 'rm -f "$receipt_script"' EXIT
    git fetch origin main
    git show FETCH_HEAD:scripts/runtime-review.mjs > "$receipt_script"
-   node "$receipt_script" receipt OWNER/REPO PR HEAD RUN ATTEMPT
+   NODE_USE_ENV_PROXY=1 node "$receipt_script" receipt OWNER/REPO PR HEAD RUN ATTEMPT
    ```
+
+   `NODE_USE_ENV_PROXY=1` makes Node's `fetch` use the environment's HTTPS
+   proxy (Node 22.21 or later); without it, hosted sessions behind a proxy
+   cannot reach the Garnet MCP.
 
    Replace the five placeholders with the checked selectors. If the command
    fails or does not report the build canary destination `example.com`, stop.
