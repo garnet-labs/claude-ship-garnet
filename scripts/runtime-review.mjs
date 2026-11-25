@@ -63,8 +63,9 @@ export function decide(review, head, base) {
       marker.jobs !== 1 || !['pr-base', 'base-ancestor'].includes(review.scope) || marker.scope !== review.scope ||
       marker.previous !== base || marker.outcome !== review.app_outcome) return 'unknown';
   if (review.app_outcome === 'changed' && marker.changed === 1) return 'changed';
-  if (review.app_outcome === 'unchanged' && marker.changed === 0 && marker.added === 0 && marker.removed === 0) {
-    return 'nothing-new';
+  if (review.app_outcome === 'unchanged' && marker.changed === 0 && marker.added === 0) {
+    if (marker.removed === 0) return 'nothing-new';
+    if (Number.isSafeInteger(marker.removed) && marker.removed > 0) return 'removals-only';
   }
   return 'unknown';
 }
@@ -184,13 +185,19 @@ export async function publish(run, repo, gh, readEvidence = evidence) {
   const verdict = active ? (result?.verdict ?? 'unknown') : 'superseded';
   const args = [repo, pr, head, run.id, run.run_attempt].join(' ');
   const conclusion = verdict === 'nothing-new' ? 'success' : verdict === 'changed' ? 'failure' : 'action_required';
-  const output = verdict === 'nothing-new' || verdict === 'changed'
+  const titles = {
+    'nothing-new': 'No new runtime behavior recorded',
+    changed: 'Runtime behavior changed',
+    'removals-only': 'Runtime destinations no longer seen'
+  };
+  const output = Object.hasOwn(titles, verdict)
     ? {
-      title: verdict === 'changed' ? 'Runtime behavior changed' : 'No new runtime behavior recorded',
+      title: titles[verdict],
       summary: [
         `[Garnet Runtime Review](${result.url}) · compared with \`${base}\` · capture is best-effort.`,
         `Head \`${head}\` · Linux run \`${run.id}\` attempt \`${run.run_attempt}\` · MCP profile \`${result.profile.id}\`.`,
-        ...(verdict === 'changed' ? [`Steward receipt lookup selectors: \`${args}\`.`] : [])
+        ...(verdict === 'changed' ? [`Steward receipt lookup selectors: \`${args}\`.`] : []),
+        ...(verdict === 'removals-only' ? ['The exhibit holds removal-only comparisons for a human; there is no Steward fix request.'] : [])
       ].join('\n\n')
     }
     : { title: 'No usable runtime comparison', summary: 'No passing gate was issued. Do not attempt a code fix from this check.' };

@@ -87,7 +87,9 @@ person pushes the correction, do not report it as a Steward fix.
 
 Do not present a timed-out, first, incomplete, or stale record as a pass.
 Rerun the capture if the profile is unavailable. A passing check means only
-that no new behavior was recorded in this comparison.
+that no new behavior or removals were recorded in this comparison.
+Removal-only comparisons stay blocked for human review without requesting a
+Steward fix.
 
 ## Local checks
 

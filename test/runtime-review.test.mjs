@@ -37,7 +37,7 @@ test('only a finalized, scoped, exact-base no-change record passes', () => {
   assert.equal(decide(review({ capture_quality: 'partial' }), head, base), 'unknown');
   assert.equal(decide(review({}, { incomplete: 1 }), head, base), 'unknown');
   assert.equal(decide(review({}, { jobs: 0 }), head, base), 'unknown');
-  assert.equal(decide(review({}, { removed: 1 }), head, base), 'unknown');
+  assert.equal(decide(review({}, { removed: 1 }), head, base), 'removals-only');
   assert.equal(decide(review({ app_outcome: 'first' }), head, base), 'unknown');
   assert.equal(decide(null, head, base), 'unknown');
 });
@@ -136,7 +136,7 @@ test('the hosted comparison must match the linked App comment and capture run', 
 });
 
 test('publishes head-bound checks; only observed changes hand work to Steward', async () => {
-  for (const state of ['nothing-new', 'changed', 'ci-failed', 'superseded']) {
+  for (const state of ['nothing-new', 'changed', 'removals-only', 'ci-failed', 'superseded']) {
     const run = {
       id: 2, path: '.github/workflows/ci.yml', event: 'pull_request', head_sha: head,
       run_attempt: 1, head_repository: { full_name: repo }, pull_requests: [{ number: 1 }],
@@ -163,12 +163,13 @@ test('publishes head-bound checks; only observed changes hand work to Steward', 
       assert.equal(payload.status, 'completed');
       conclusion = payload.conclusion;
       assert.equal(payload.output.summary.includes('Steward receipt lookup selectors'), state === 'changed');
+      if (state === 'removals-only') assert.equal(payload.output.title, 'Runtime destinations no longer seen');
     };
     await publish(run, repo, gh, async (_gh, observed, baseline) => {
       assert.notEqual(state, 'ci-failed');
       assert.deepEqual(observed, context);
       assert.equal(baseline, base);
-      return { verdict: state === 'changed' ? 'changed' : 'nothing-new', url, profile: profile() };
+      return { verdict: state === 'superseded' ? 'nothing-new' : state, url, profile: profile() };
     });
     assert.equal(conclusion, { 'nothing-new': 'success', changed: 'failure' }[state] ?? 'action_required');
   }
