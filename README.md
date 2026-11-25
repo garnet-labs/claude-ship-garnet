@@ -91,27 +91,6 @@ that no new behavior or removals were recorded in this comparison.
 Removal-only comparisons stay blocked for human review without requesting a
 Steward fix.
 
-## Without Claude Ship (Pro or Max)
-
-Two workflows run the same loop with Claude Code GitHub Actions on a personal
-subscription. They don't need a Team or Enterprise plan.
-
-- `claude-review.yml` reviews each same-repo PR, standing in for Code Review.
-- `claude-steward.yml` runs after `garnet/runtime-diff` publishes. When the
-  current head shows **Runtime behavior changed**, it follows the default-branch
-  `.claude/skills/steward/SKILL.md` and pushes one narrow fix. It tries once per
-  head.
-
-Setup:
-
-1. Install the [Claude GitHub App](https://github.com/apps/claude) on this
-   repository. Steward pushes with its token, so CI runs again on the fix.
-2. Run `claude setup-token` locally and save the result as the
-   `CLAUDE_CODE_OAUTH_TOKEN` repository secret.
-
-There is no stand-in for Claude Approvals. Keep a human review required in
-branch rules.
-
 ## Local checks
 
 ```sh
