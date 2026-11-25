@@ -1,0 +1,21 @@
+# Anthropic does not expose external checks to this policy. Require
+# garnet/runtime-diff separately in GitHub; it never authorizes a review.
+version: 1
+mode: observe
+rules:
+  - purpose: "A manifest-only version bump may get Claude's approval after Code Review passes."
+    paths: ["package-lock.json", "packages/format-label/package.json"]
+    nested: inherit
+    verdict:
+      claude: comments
+      seats: [{ count: 1, from: [humans, "!pr/authors"] }]
+    override:
+      - if: "claude/code_review = pass"
+        verdict: { claude: approves, seats: 0 }
+  - purpose: "Anything beyond the manifest-only bump needs a non-author."
+    paths: ["**", "!package-lock.json", "!packages/format-label/package.json"]
+    nested: inherit
+    verdict:
+      claude: comments
+      seats: [{ count: 1, from: [humans, "!pr/authors"] }]
+    advisory: [claude/code_review]
