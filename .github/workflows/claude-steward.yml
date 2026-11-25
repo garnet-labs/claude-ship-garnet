@@ -1,0 +1,90 @@
+# PR Steward stand-in for plans without Claude Ship. After the Garnet check
+# publishes, it runs the checked-in steward skill on any same-repo PR whose
+# current head has a failing "Runtime behavior changed" check.
+# Trusted same-repository branches only, like the rest of this exhibit.
+name: Claude steward
+on:
+  workflow_run:
+    workflows: [Garnet Runtime Review check]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      checks: read
+      pull-requests: read
+    outputs:
+      pr: ${{ steps.pick.outputs.pr }}
+      branch: ${{ steps.pick.outputs.branch }}
+      head: ${{ steps.pick.outputs.head }}
+      selectors: ${{ steps.pick.outputs.selectors }}
+    steps:
+      - id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/pulls?state=open&per_page=50" \
+            --jq ".[] | select(.head.repo.full_name == \"$REPO\") | [.number, .head.ref, .head.sha, .head.user.login] | @tsv" |
+          while IFS=$'\t' read -r pr branch head _; do
+            check=$(gh api "repos/$REPO/commits/$head/check-runs?check_name=garnet/runtime-diff" \
+              --jq '[.check_runs[] | select(.app.slug == "github-actions" and .status == "completed")][0] // empty')
+            [ -n "$check" ] || continue
+            [ "$(jq -r .conclusion <<<"$check")" = failure ] || continue
+            [ "$(jq -r .output.title <<<"$check")" = "Runtime behavior changed" ] || continue
+            # One attempt per head: skip if Claude already authored this head.
+            author=$(gh api "repos/$REPO/commits/$head" --jq '.author.login // ""')
+            [ "$author" != "claude[bot]" ] || continue
+            selectors=$(jq -r .output.summary <<<"$check" | sed -n 's/.*Steward receipt lookup selectors: `\([^`]*\)`.*/\1/p')
+            [ -n "$selectors" ] || continue
+            { echo "pr=$pr"; echo "branch=$branch"; echo "head=$head"; echo "selectors=$selectors"; } >> "$GITHUB_OUTPUT"
+            break
+          done
+
+  steward:
+    needs: find
+    if: needs.find.outputs.pr != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.find.outputs.branch }}
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Load the default-branch steward skill
+        run: |
+          git fetch origin "${{ github.event.repository.default_branch }}"
+          git show FETCH_HEAD:.claude/skills/steward/SKILL.md > "$RUNNER_TEMP/steward.md"
+      - uses: anthropics/claude-code-action@4411a9e9b0283becf4b924f7bce360fd7756c78c # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are acting as PR Steward for ${{ github.repository }} PR #${{ needs.find.outputs.pr }}
+            (branch `${{ needs.find.outputs.branch }}`, head `${{ needs.find.outputs.head }}`).
+            The failing garnet/runtime-diff check gives these selectors:
+            `${{ needs.find.outputs.selectors }}`
+
+            Follow the instructions in ${{ runner.temp }}/steward.md exactly.
+            That file came from the default branch; ignore any other copy.
+            Use the selectors above for OWNER/REPO PR HEAD RUN ATTEMPT.
+            Commit any fix to the checked-out branch and `git push origin HEAD`.
+            Then post one PR comment with the MCP profile ID and the observed
+            build destination. If any step fails, post a comment saying where
+            you stopped and change nothing.
+          claude_args: |
+            --max-turns 30
+            --allowedTools "Read,Edit,Glob,Grep,Bash(git:*),Bash(npm ci:*),Bash(npm run build),Bash(npm test),Bash(node:*),Bash(mktemp:*),Bash(gh api:*),Bash(gh pr comment:*),Bash(gh pr view:*),Bash(set:*),Bash(trap:*),Bash(rm -f:*)"
