@@ -13,13 +13,32 @@ const checkName = 'garnet/runtime-diff';
 const endpoint = 'https://api.garnet.ai/api/v2/mcp';
 const exec = promisify(execFile);
 
-export async function mcp(name, args, fetchImpl = fetch) {
+// Transient hosted-MCP failures (HTTP 5xx, or a tool error whose only text is
+// "service unavailable") are retried; nothing else is. Tool text is matched
+// only to classify that failure and is never parsed as evidence.
+export async function mcp(name, args, fetchImpl = fetch, { attempts = 6, delay = 5_000 } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await mcpOnce(name, args, fetchImpl);
+    } catch (error) {
+      if (!error.transient || attempt >= attempts) throw error;
+      await wait(delay * attempt);
+    }
+  }
+}
+
+function transient(message) {
+  return Object.assign(new Error(message), { transient: true });
+}
+
+async function mcpOnce(name, args, fetchImpl) {
   const response = await fetchImpl(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
     signal: AbortSignal.timeout(20_000)
   });
+  if (response.status >= 500) throw transient(`Garnet MCP HTTP ${response.status}`);
   if (!response.ok) throw new Error(`Garnet MCP HTTP ${response.status}`);
   const body = await response.text();
   const message = response.headers.get('content-type')?.includes('text/event-stream')
@@ -28,6 +47,11 @@ export async function mcp(name, args, fetchImpl = fetch) {
       return data.length ? [JSON.parse(data.join('\n'))] : [];
     }).find(event => event.id === 1)
     : JSON.parse(body);
+  const content = message?.result?.content;
+  if (message?.id === 1 && message.result?.isError === true && Array.isArray(content) && content.length === 1 &&
+      content[0]?.type === 'text' && content[0].text?.trim().toLowerCase() === 'service unavailable') {
+    throw transient('Garnet MCP service unavailable');
+  }
   if (message?.id !== 1 || message.error || message.result?.isError || !message.result?.structuredContent) {
     throw new Error('Garnet MCP did not return structured evidence');
   }

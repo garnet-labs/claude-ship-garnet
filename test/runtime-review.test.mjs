@@ -186,3 +186,25 @@ test('MCP transport handles JSON and SSE, but never parses tool text as evidence
     id: 1, result: { content: [{ type: 'text', text: JSON.stringify(value) }] }
   })), /did not return structured evidence/);
 });
+
+test('MCP retries only transient service failures, then gives up', async () => {
+  const value = { one: 1 };
+  const ok = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { structuredContent: value } });
+  const down = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { isError: true, content: [{ type: 'text', text: 'service unavailable' }] } });
+  const opts = { attempts: 3, delay: 0 };
+  let calls = 0;
+  assert.deepEqual(await mcp('outcome', {}, async () => new Response(++calls < 3 ? down : ok), opts), value);
+  assert.equal(calls, 3);
+  calls = 0;
+  assert.deepEqual(await mcp('outcome', {}, async () => ++calls < 2 ? new Response('', { status: 503 }) : new Response(ok), opts), value);
+  calls = 0;
+  await assert.rejects(mcp('outcome', {}, async () => { calls++; return new Response(down); }, opts), /service unavailable/);
+  assert.equal(calls, 3);
+  calls = 0;
+  const other = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { isError: true, content: [{ type: 'text', text: 'not found' }] } });
+  await assert.rejects(mcp('outcome', {}, async () => { calls++; return new Response(other); }, opts), /did not return structured evidence/);
+  assert.equal(calls, 1);
+  calls = 0;
+  await assert.rejects(mcp('outcome', {}, async () => { calls++; return new Response('', { status: 404 }); }, opts), /HTTP 404/);
+  assert.equal(calls, 1);
+});
