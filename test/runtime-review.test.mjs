@@ -27,6 +27,8 @@ function review(overrides = {}, envelopeOverrides = {}) {
 
 test('only a finalized, scoped, exact-base no-change record passes', () => {
   assert.equal(decide(review(), head, base), 'nothing-new');
+  assert.equal(decide(review({ scope: 'pr-base' }, { scope: 'pr-base' }), head, base), 'nothing-new');
+  assert.equal(decide(review({ scope: 'pr-base' }), head, base), 'unknown');
   assert.equal(decide(review(), head, 'c'.repeat(40)), 'unknown');
   assert.equal(decide(review({ marker_commit: base }), head, base), 'unknown');
   assert.equal(decide(review({ head_sha: base }), head, base), 'unknown');

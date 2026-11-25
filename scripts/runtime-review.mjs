@@ -60,7 +60,7 @@ export function decide(review, head, base) {
       review.status !== 'finalized' || marker.status !== 'finalized' ||
       !['complete', 'best-effort'].includes(review.capture_quality) ||
       marker.capture_quality !== review.capture_quality || marker.incomplete !== 0 ||
-      marker.jobs !== 1 || review.scope !== 'base-ancestor' || marker.scope !== 'base-ancestor' ||
+      marker.jobs !== 1 || !['pr-base', 'base-ancestor'].includes(review.scope) || marker.scope !== review.scope ||
       marker.previous !== base || marker.outcome !== review.app_outcome) return 'unknown';
   if (review.app_outcome === 'changed' && marker.changed === 1) return 'changed';
   if (review.app_outcome === 'unchanged' && marker.changed === 0 && marker.added === 0 && marker.removed === 0) {
