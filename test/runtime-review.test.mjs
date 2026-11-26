@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import pr6 from './pr-review-pr6.json' with { type: 'json' };
-import { decide, evidence, isGarnetComment, matchesRun, mcp, profileFor, publish, workloadEgress } from '../scripts/runtime-review.mjs';
+import { decide, evidence, invalidateRetargetedChecks, isGarnetComment, matchesRun, mcp, profileFor, publish, workloadEgress } from '../scripts/runtime-review.mjs';
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -244,6 +244,7 @@ test('publishes head-bound checks; only observed changes hand work to Steward', 
         assert.equal(payload.name, 'garnet/runtime-diff');
         assert.equal(payload.head_sha, head);
         assert.equal(payload.status, 'in_progress');
+        assert.equal(payload.external_id, `1:${state === 'changed' ? 'exhibit/playwright' : 'main'}:${base}`);
         return { id: 57 };
       }
       if (path === 'actions/runs/2') return run;
@@ -264,6 +265,43 @@ test('publishes head-bound checks; only observed changes hand work to Steward', 
       { 'nothing-new': 'success', changed: 'failure' }[state] ?? 'action_required');
     if (state === 'untracked-base') assert.equal(reads, 1);
   }
+});
+
+test('retargeting invalidates only old passing runtime checks for the same PR and head', async () => {
+  const pull = {
+    number: 1, state: 'open', base: { ref: 'exhibit/playwright', sha: base },
+    head: { sha: head, repo: { full_name: repo } }
+  };
+  const event = { action: 'edited', changes: { base: { ref: { from: 'main' } } }, pull_request: pull };
+  const outdated = {
+    id: 1, name: 'garnet/runtime-diff', app: { id: 15368 }, conclusion: 'success',
+    external_id: `1:main:${base}`,
+    output: { summary: `[Garnet Runtime Review](${url}) · compared with \`${base}\`.` }
+  };
+  const writes = [];
+  const gh = async (path, body, method) => {
+    if (path === 'pulls/1') return pull;
+    if (path === `commits/${head}/check-runs?check_name=garnet%2Fruntime-diff&filter=all&per_page=100&page=1`) return {
+      check_runs: [
+        outdated, { ...outdated, id: 2, external_id: '' },
+        { ...outdated, id: 3, external_id: `1:exhibit/playwright:${base}` },
+        { ...outdated, id: 4, app: { id: 1 } },
+        { ...outdated, id: 5, output: { summary: outdated.output.summary.replace('/pull/1', '/pull/2') } },
+        { ...outdated, id: 6, conclusion: 'failure' }
+      ]
+    };
+    writes.push({ path, body, method });
+  };
+  assert.equal(await invalidateRetargetedChecks(event, repo, gh), 2);
+  assert.deepEqual(writes.map(({ path, body, method }) => [path, body.status, body.conclusion, method]), [
+    ['check-runs/1', 'completed', 'action_required', 'PATCH'],
+    ['check-runs/2', 'completed', 'action_required', 'PATCH']
+  ]);
+  assert.equal(await invalidateRetargetedChecks({ ...event, changes: {} }, repo, async () => assert.fail('metadata edit')), undefined);
+  assert.equal(await invalidateRetargetedChecks(event, repo, async path => {
+    assert.equal(path, 'pulls/1');
+    return { ...pull, base: { ...pull.base, ref: 'main' } };
+  }), undefined);
 });
 
 test('MCP transport handles JSON and SSE, but never parses tool text as evidence', async () => {
