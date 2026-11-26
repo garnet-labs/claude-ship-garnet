@@ -1,3 +1,5 @@
+import { normalizeLabel } from '@exhibit/normalize-label';
+
 export function formatLabel(label) {
-  return label.trim().toLowerCase();
+  return normalizeLabel(label);
 }

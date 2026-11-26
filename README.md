@@ -1,9 +1,10 @@
 # Claude Ship × Garnet: one-PR exhibit
 
-One dependency bump, three heads: manifest only → the same bump with a no-data
-build callout → a correction that keeps the bump and removes the callout.
-The fixture uses a private npm workspace package (not a published package);
-the GitHub repository is public so the demo needs no Garnet secrets.
+One PR, three manifest-only heads: a routine dependency update → a release
+that adds a no-data build request → a Steward rollback of just that release.
+The exhibit uses local npm release tarballs, with readable fixture sources.
+Nothing is published to npm; ordinary `npm ci` installs the selected release
+with the lockfile's integrity hash. Public GitHub CI needs no Garnet secrets.
 
 ## What this tests
 
@@ -15,9 +16,10 @@ the GitHub repository is public so the demo needs no Garnet secrets.
 | [PR Steward](https://code.claude.com/docs/en/pr-steward#what-pr-steward-fixes) | Works from a real failed GitHub check. The checked-in skill tells it to read the exact hosted MCP profile before making a narrow fix. | Treat missing evidence as a fix request. |
 
 The custom check runs from the default branch after CI. It executes no PR
-code and downloads no PR artifacts. It uses the public Garnet MCP `outcome`
-and `profiles` tools, verifies the linked Garnet App comment, and requires the
-current head, exact base commit, run, attempt, and recorded job to agree.
+code and downloads no PR artifacts. It reads the finalized Garnet App comment
+directly from GitHub, then reads the referenced record using the public Garnet
+MCP `profiles` tool. The head, exact base, run, attempt, job and profile must
+agree. The publisher and Steward don't need the MCP PR-outcome lookup.
 The exhibit is for trusted same-repository branches, not fork PRs or a
 production security boundary: an actor who can run a workflow with
 `checks: write` as GitHub Actions shares the check's source identity.
@@ -55,8 +57,10 @@ Start from the recorded `main` and create a topic branch. For the first head:
 
 ```sh
 npm version 1.0.1 --workspace @exhibit/format-label --no-git-tag-version
+npm pkg set 'dependencies.@exhibit/normalize-label=file:../../fixtures/npm/exhibit-normalize-label-1.0.1.tgz' --workspace @exhibit/format-label
+npm install --package-lock-only --ignore-scripts --no-audit --no-fund
 git add package-lock.json packages/format-label/package.json
-git commit -m 'chore: bump format-label to 1.0.1'
+git commit -m 'chore: update normalize-label and bump format-label'
 ```
 
 Open a ready PR. Save the App comment permalink, `garnet/runtime-diff` check,
@@ -64,24 +68,23 @@ and the Claude review for the exact head. Expect the check to say **No new
 runtime behavior recorded** if the recorded comparison found no delta. Only
 claim a Claude approval if GitHub shows the approving review at this head.
 
-For the second head, edit `packages/format-label/index.mjs` to use this
-fixture, commit, and push. It sends no user, repo, or build data and ignores
-network errors so the build test alone cannot detect the callout:
+For the second head, select the 1.0.2 release. Only the manifest and lockfile
+change. The already-present fixture sends a HEAD request to `example.com`
+during Build, without user, repo, or build data, and ignores network errors:
 
-```js
-export async function formatLabel(label) {
-  await fetch('https://example.com/', {
-    method: 'HEAD',
-    signal: AbortSignal.timeout(5000)
-  }).catch(() => {});
-  return label.trim().toLowerCase();
-}
+```sh
+npm pkg set 'dependencies.@exhibit/normalize-label=file:../../fixtures/npm/exhibit-normalize-label-1.0.2.tgz' --workspace @exhibit/format-label
+npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+git add package-lock.json packages/format-label/package.json
+git commit -m 'chore: bump normalize-label to 1.0.2'
 ```
 
-Expect the ordinary build to succeed and the custom runtime check to fail
+Push, then expect the ordinary build to succeed and the custom runtime check to fail
 with **Runtime behavior changed**. Watch for a Steward-authored reply naming
-the exact MCP profile and a Steward commit removing only the callout. Check
-the final head's GitHub diff, Garnet comparison, and Claude review separately.
+the exact MCP profile and a Steward commit reselecting 1.0.1 while retaining
+the workspace bump. Check the final head's GitHub diff, Garnet comparison,
+and Claude review separately. The release source is not in the PR diff;
+a reviewer can still inspect the installed archive or its checked-in source.
 If you arm Steward with `@claude steward`, report the manual trigger; if a
 person pushes the correction, do not report it as a Steward fix.
 
@@ -90,6 +93,10 @@ Rerun the capture if the profile is unavailable. A passing check means only
 that no new behavior or removals were recorded in this comparison.
 Removal-only comparisons stay blocked for human review without requesting a
 Steward fix.
+
+To reproduce a release tarball, use
+`npm pack ./fixtures/npm/source/<version> --ignore-scripts --pack-destination fixtures/npm`
+with the npm version used by the exhibit.
 
 ## Local checks
 

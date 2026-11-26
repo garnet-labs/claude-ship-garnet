@@ -3,5 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "exports": "./index.mjs"
+  "exports": "./index.mjs",
+  "dependencies": {
+    "@exhibit/normalize-label": "file:../../fixtures/npm/exhibit-normalize-label-1.0.0.tgz"
+  }
 }
