@@ -1,5 +1,6 @@
 # garnet-runtime-review: installed by a coding agent (devin-plugin)
 name: CI
+run-name: ${{ github.event.action == 'edited' && github.event.changes.base.ref.from == null && 'CI (metadata edit)' || 'CI (capture)' }}
 on:
   push:
     branches: [main, exhibit/playwright]
