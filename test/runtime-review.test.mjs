@@ -9,58 +9,50 @@ const repo = 'garnet-labs/claude-ship-garnet';
 const url = `https://github.com/${repo}/pull/1#issuecomment-42`;
 const context = { repo, pr: 1, head, run: 2, attempt: 1 };
 
-function review(overrides = {}, envelopeOverrides = {}) {
-  const item = {
-    determinable: true, bound_to_head: true, head_sha: head, marker_commit: head,
-    status: 'finalized', capture_quality: 'best-effort', scope: 'base-ancestor',
-    app_outcome: 'unchanged', profile_ids: [id], comment_url: url, ...overrides
-  };
+function marker(overrides = {}) {
   return {
-    ...item,
-    envelope: {
-      commit: head, previous: base, status: 'finalized', capture_quality: 'best-effort',
-      incomplete: 0, jobs: 1, scope: 'base-ancestor', outcome: item.app_outcome,
-      changed: 0, added: 0, removed: 0, ...envelopeOverrides
-    }
+    commit: head, previous: base, status: 'finalized', capture_quality: 'best-effort',
+    incomplete: 0, jobs: 1, scope: 'base-ancestor', outcome: 'unchanged',
+    changed: 0, added: 0, removed: 0, ...overrides
   };
 }
 
 test('only a finalized, scoped, exact-base no-change record passes', () => {
-  assert.equal(decide(review(), head, base), 'nothing-new');
-  assert.equal(decide(review({ scope: 'pr-base' }, { scope: 'pr-base' }), head, base), 'nothing-new');
-  assert.equal(decide(review({ scope: 'pr-base' }), head, base), 'unknown');
-  assert.equal(decide(review(), head, 'c'.repeat(40)), 'unknown');
-  assert.equal(decide(review({ marker_commit: base }), head, base), 'unknown');
-  assert.equal(decide(review({ head_sha: base }), head, base), 'unknown');
-  assert.equal(decide(review({ status: 'pending' }), head, base), 'unknown');
-  assert.equal(decide(review({ determinable: false }), head, base), 'unknown');
-  assert.equal(decide(review({ capture_quality: 'partial' }), head, base), 'unknown');
-  assert.equal(decide(review({}, { incomplete: 1 }), head, base), 'unknown');
-  assert.equal(decide(review({}, { jobs: 0 }), head, base), 'unknown');
-  assert.equal(decide(review({}, { removed: 1 }), head, base), 'removals-only');
-  assert.equal(decide(review({ app_outcome: 'first' }), head, base), 'unknown');
+  assert.equal(decide(marker(), head, base), 'nothing-new');
+  assert.equal(decide(marker({ scope: 'pr-base' }), head, base), 'nothing-new');
+  assert.equal(decide(marker({ scope: 'previous-run' }), head, base), 'unknown');
+  assert.equal(decide(marker(), head, 'c'.repeat(40)), 'unknown');
+  assert.equal(decide(marker({ commit: base }), head, base), 'unknown');
+  assert.equal(decide(marker({ status: 'pending' }), head, base), 'unknown');
+  assert.equal(decide(marker({ capture_quality: 'partial' }), head, base), 'unknown');
+  assert.equal(decide(marker({ incomplete: 1 }), head, base), 'unknown');
+  assert.equal(decide(marker({ jobs: 0 }), head, base), 'unknown');
+  assert.equal(decide(marker({ removed: 1 }), head, base), 'removals-only');
+  assert.equal(decide(marker({ outcome: 'first' }), head, base), 'unknown');
   assert.equal(decide(null, head, base), 'unknown');
 });
 
 test('a positive change is distinct from absent evidence', () => {
-  const changed = review({ app_outcome: 'changed' }, { changed: 1, added: 1 });
+  const changed = marker({ outcome: 'changed', changed: 1, added: 1 });
   assert.equal(decide(changed, head, base), 'changed');
-  assert.equal(decide(review({ app_outcome: 'changed' }), head, base), 'unknown');
+  assert.equal(decide(marker({ outcome: 'changed' }), head, base), 'unknown');
 });
 
 test('GitHub App identity and exact run attempt cannot be substituted', () => {
   const comment = {
-    html_url: url, user: { id: 210813234 }, performed_via_github_app: { id: 1249875 },
+    id: 42, html_url: url, user: { id: 210813234 }, performed_via_github_app: { id: 1249875 },
     body: `<!-- garnet-control-plane-pr-comment:v1:app.garnet.ai -->\n<!-- garnet:commit ${head} -->`
   };
-  assert.equal(isGarnetComment(comment, head, url), true);
-  assert.equal(isGarnetComment({ ...comment, user: { id: 1 } }, head, url), false);
-  assert.equal(isGarnetComment(comment, base, url), false);
+  assert.equal(isGarnetComment(comment, context), true);
+  assert.equal(isGarnetComment({ ...comment, user: { id: 1 } }, context), false);
+  assert.equal(isGarnetComment({ ...comment, performed_via_github_app: { id: 1 } }, context), false);
+  assert.equal(isGarnetComment(comment, { ...context, pr: 2 }), false);
   const run = {
-    path: '.github/workflows/ci.yml', event: 'pull_request', head_sha: head,
+    id: 2, path: '.github/workflows/ci.yml', event: 'pull_request', head_sha: head,
     run_attempt: 1, head_repository: { full_name: repo }, pull_requests: [{ number: 1 }]
   };
   assert.equal(matchesRun(run, context), true);
+  assert.equal(matchesRun({ ...run, id: 3 }, context), false);
   assert.equal(matchesRun({ ...run, run_attempt: 2 }, context), false);
   assert.equal(matchesRun({ ...run, pull_requests: [{ number: 1 }, { number: 2 }] }, context), false);
   assert.equal(matchesRun({ ...run, head_repository: { full_name: 'other/fork' } }, context), false);
@@ -105,34 +97,54 @@ test('stale, missing, duplicate and unreadable observations do not pass', async 
   await assert.rejects(profileFor(context, id, async () => { throw new Error('unreadable'); }), /unreadable/);
 });
 
-test('the hosted comparison must match the linked App comment and capture run', async () => {
-  const outcome = review();
+test('the trusted App comparison pins the capture attempt and exact MCP profile', async () => {
   const read = async (name, args) => {
-    if (name === 'outcome') {
-      assert.deepEqual(args, { githubOrg: 'garnet-labs', repo: 'claude-ship-garnet', pullNumber: 1 });
-      return outcome;
-    }
+    assert.equal(name, 'profiles');
+    assert.equal(args.runID, '2');
+    assert.equal(args.runAttempt, 1);
     return { items: [profile()], pageInfo: { hasNextPage: false } };
   };
   const comment = {
-    html_url: url, user: { id: 210813234 }, performed_via_github_app: { id: 1249875 },
+    id: 42, html_url: url, user: { id: 210813234 }, performed_via_github_app: { id: 1249875 },
     body: [
       '<!-- garnet-control-plane-pr-comment:v1:app.garnet.ai -->',
       `<!-- garnet:commit ${head} -->`,
-      `<!-- garnet:summary ${JSON.stringify(outcome.envelope)} -->`,
-      `https://github.com/${repo}/actions/runs/2/job/123`
+      `<!-- garnet:summary ${JSON.stringify(marker())} -->`,
+      `<a href="https://github.com/${repo}/actions/runs/2/job/123?utm_source=github">Job log</a>`,
+      `<a href="https://app.garnet.ai/public/runs/2?profile=${id}&amp;utm_source=github">Full record</a>`
     ].join('\n')
   };
-  const matched = await evidence(async path => {
-    assert.equal(path, 'issues/comments/42');
-    return comment;
-  }, context, base, read);
+  const capture = { id: 123, name: 'runtime-build', run_attempt: 1, conclusion: 'success' };
+  function github(comments, jobs = [capture]) {
+    return async path => {
+      if (path === 'issues/1/comments?per_page=100&page=1') return comments;
+      assert.equal(path, 'actions/runs/2/attempts/1/jobs?per_page=100');
+      return { total_count: jobs.length, jobs };
+    };
+  }
+  const matched = await evidence(github([comment]), context, base, read);
   assert.equal(matched.verdict, 'nothing-new');
   assert.equal(matched.profile.id, id);
-  assert.equal(await evidence(async () => ({ ...comment, body: comment.body.replace('/runs/2/', '/runs/3/') }),
-    context, base, read), null);
-  assert.equal(await evidence(async () => ({ ...comment, body: comment.body.replace('"incomplete":0', '"incomplete":1') }),
-    context, base, read), null);
+  assert.equal(matched.url, url);
+  for (const body of [
+    comment.body.replace(`garnet:commit ${head}`, `garnet:commit ${base}`),
+    comment.body.replace('/job/123', '/job/124'),
+    comment.body.replace('/public/runs/2', '/public/runs/3'),
+    comment.body.replace('https://app.garnet.ai/', 'https://example.com/'),
+    comment.body.replace('"incomplete":0', '"incomplete":1'),
+    comment.body.replace(`profile=${id}`, `profile=${id}&amp;profile=${id}`),
+    `${comment.body}\n<!-- garnet:summary malformed -->`,
+    `${comment.body}\n<!-- garnet:commit ${head} -->`
+  ]) assert.equal(await evidence(github([{ ...comment, body }]), context, base, read), null);
+  assert.equal(await evidence(github([comment, comment]), context, base, read), null);
+  assert.equal(await evidence(github([{ ...comment, user: { id: 1 } }]), context, base, read), null);
+  assert.equal(await evidence(github([comment], [{ ...capture, run_attempt: 2 }]), context, base, read), null);
+  assert.equal(await evidence(github([comment], [capture, capture]), context, base, read), null);
+
+  const pagedGithub = async path => path === 'issues/1/comments?per_page=100&page=1'
+    ? Array.from({ length: 100 }, () => ({}))
+    : path === 'issues/1/comments?per_page=100&page=2' ? [comment] : github([])(path);
+  assert.equal((await evidence(pagedGithub, context, base, read)).profile.id, id);
 });
 
 test('publishes head-bound checks; only observed changes hand work to Steward', async () => {
@@ -178,11 +190,11 @@ test('publishes head-bound checks; only observed changes hand work to Steward', 
 test('MCP transport handles JSON and SSE, but never parses tool text as evidence', async () => {
   const value = { one: 1 };
   const result = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { structuredContent: value } });
-  assert.deepEqual(await mcp('outcome', {}, async () => new Response(result)), value);
-  assert.deepEqual(await mcp('outcome', {}, async () => new Response(`data: ${result}\n\n`, {
+  assert.deepEqual(await mcp('profiles', {}, async () => new Response(result)), value);
+  assert.deepEqual(await mcp('profiles', {}, async () => new Response(`data: ${result}\n\n`, {
     headers: { 'Content-Type': 'text/event-stream' }
   })), value);
-  await assert.rejects(mcp('outcome', {}, async () => Response.json({
+  await assert.rejects(mcp('profiles', {}, async () => Response.json({
     id: 1, result: { content: [{ type: 'text', text: JSON.stringify(value) }] }
   })), /did not return structured evidence/);
 });
