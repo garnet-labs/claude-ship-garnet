@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildEgress, decide, evidence, isGarnetComment, matchesRun, mcp, profileFor, publish } from '../scripts/runtime-review.mjs';
+import pr6 from './pr-review-pr6.json' with { type: 'json' };
+import { decide, evidence, invalidateRetargetedChecks, isGarnetComment, matchesRun, mcp, profileFor, publish, workloadEgress } from '../scripts/runtime-review.mjs';
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -69,7 +70,7 @@ function profile() {
   };
 }
 
-test('MCP profiles use exact selectors, paginate, and expose only build destinations', async () => {
+test('MCP profiles use exact selectors and paginate', async () => {
   const result = await profileFor(context, id, async (name, args) => {
     assert.equal(name, 'profiles');
     assert.equal(args.githubOrg, 'garnet-labs');
@@ -82,7 +83,20 @@ test('MCP profiles use exact selectors, paginate, and expose only build destinat
     return { items: [], pageInfo: { hasNextPage: true, endCursor: 'page2' } };
   });
   assert.equal(result.id, id);
-  assert.deepEqual(buildEgress(result), ['example.com']);
+  assert.deepEqual(workloadEgress(result), ['example.com']);
+});
+
+test('receipt includes workload egress from install, smoke, and build, not runner-only peers', () => {
+  const item = profile();
+  item.data.network.egress.peers.push(
+    { remote_names: ['install.example', 'example.com'], proc_trees: [{ github_step: '0. Install dependencies' }] },
+    { remote_address: '10.0.0.1', proc_trees: [{ github_step: 'Smoke test' }, { github_step: '99. Runner Processes' }] },
+    { remote_address: '169.254.169.254', proc_trees: [{ github_step: 'Test' }] },
+    { remote_names: ['unattributed.example'], proc_trees: [{ github_step: '<unknown>' }, {}] },
+    { remote_names: ['setup.example'], proc_trees: [{ github_step: '1. Set up job' }] },
+    { remote_names: ['post.example'], proc_trees: [{ github_step: '8. Post Run checkout' }] }
+  );
+  assert.deepEqual(workloadEgress(item), ['10.0.0.1', '169.254.169.254', 'example.com', 'install.example']);
 });
 
 test('stale, missing, duplicate and unreadable observations do not pass', async () => {
@@ -149,6 +163,64 @@ test('the trusted App comparison pins the capture attempt and exact MCP profile'
   assert.equal((await evidence(pagedGithub, context, base, read)).profile.id, id);
 });
 
+test('PR #6 publishes success only after binding its App comment and capture profile', async () => {
+  const recordedHead = pr6.head_sha;
+  const recordedBase = pr6.envelope.previous;
+  const run = {
+    id: 45724477522, path: '.github/workflows/ci.yml', event: 'pull_request', conclusion: 'success',
+    head_sha: recordedHead, run_attempt: 1, head_repository: { full_name: repo }, pull_requests: [{ number: 6 }]
+  };
+  const request = { repo, pr: 6, head: recordedHead, run: run.id, attempt: 1 };
+  const [profileID] = pr6.profile_ids;
+  const comment = {
+    id: 7177218621, html_url: pr6.comment_url, user: { id: 210813234 }, performed_via_github_app: { id: 1249875 },
+    body: [
+      '<!-- garnet-control-plane-pr-comment:v1:app.garnet.ai -->',
+      `<!-- garnet:commit ${recordedHead} -->`,
+      `<!-- garnet:summary ${JSON.stringify(pr6.envelope)} -->`,
+      `<a href="https://github.com/${repo}/actions/runs/${run.id}/job/139590716442">Job log</a>`,
+      `<a href="https://app.garnet.ai/public/runs/${run.id}?profile=${profileID}">Full record</a>`
+    ].join('\n')
+  };
+  const recordedProfile = {
+    ...profile(), id: profileID, runID: String(run.id),
+    data: { scenarios: { github: { head_sha: recordedHead } }, network: { egress: { peers: [] } } }
+  };
+  const readMcp = item => async (name, args) => {
+    assert.equal(name, 'profiles');
+    assert.equal(args.runID, String(run.id));
+    assert.equal(args.runAttempt, 1);
+    assert.equal(args.job, 'runtime-build');
+    return { items: [item], pageInfo: { hasNextPage: false } };
+  };
+  const writes = [];
+  const github = appComment => async (path, body, method) => {
+    if (path === 'pulls/6') return {
+      state: 'open', head: { sha: recordedHead, repo: { full_name: repo } }, base: { ref: 'main', sha: recordedBase }
+    };
+    if (path === `actions/runs/${run.id}`) return run;
+    if (path === 'issues/6/comments?per_page=100&page=1') return [appComment];
+    if (path === `actions/runs/${run.id}/attempts/1/jobs?per_page=100`) return {
+      total_count: 1, jobs: [{ id: 139590716442, name: 'runtime-build', run_attempt: 1, conclusion: 'success' }]
+    };
+    assert.ok(body);
+    writes.push({ path, body, method });
+    return { id: 1 };
+  };
+  assert.equal(await publish(run, repo, github(comment), (gh, context, base) =>
+    evidence(gh, context, base, readMcp(recordedProfile))), `garnet/runtime-diff: nothing-new on ${recordedHead}`);
+  assert.deepEqual(writes.map(({ path, body, method }) => [path, body.status, method]), [
+    ['check-runs', 'in_progress', undefined], ['check-runs/1', 'completed', 'PATCH']
+  ]);
+  assert.equal(writes[0].body.head_sha, recordedHead);
+  assert.equal(writes[1].body.conclusion, 'success');
+  assert.equal(writes[1].body.output.title, 'No new runtime behavior recorded');
+  assert.equal(await evidence(github({ ...comment, performed_via_github_app: { id: 1 } }),
+    request, recordedBase, readMcp(recordedProfile)), null);
+  assert.equal(await evidence(github(comment), request, recordedBase, readMcp({ ...recordedProfile, runAttempt: 2 })), null);
+  assert.equal(await evidence(github(comment), request, recordedBase, readMcp({ ...recordedProfile, id })), null);
+});
+
 test('publishes head-bound checks; only observed changes hand work to Steward', async () => {
   for (const state of ['nothing-new', 'changed', 'removals-only', 'ci-failed', 'superseded', 'retargeted', 'untracked-base']) {
     const run = {
@@ -172,6 +244,7 @@ test('publishes head-bound checks; only observed changes hand work to Steward', 
         assert.equal(payload.name, 'garnet/runtime-diff');
         assert.equal(payload.head_sha, head);
         assert.equal(payload.status, 'in_progress');
+        assert.equal(payload.external_id, `1:${state === 'changed' ? 'exhibit/playwright' : 'main'}:${base}`);
         return { id: 57 };
       }
       if (path === 'actions/runs/2') return run;
@@ -192,6 +265,43 @@ test('publishes head-bound checks; only observed changes hand work to Steward', 
       { 'nothing-new': 'success', changed: 'failure' }[state] ?? 'action_required');
     if (state === 'untracked-base') assert.equal(reads, 1);
   }
+});
+
+test('retargeting invalidates only old passing runtime checks for the same PR and head', async () => {
+  const pull = {
+    number: 1, state: 'open', base: { ref: 'exhibit/playwright', sha: base },
+    head: { sha: head, repo: { full_name: repo } }
+  };
+  const event = { action: 'edited', changes: { base: { ref: { from: 'main' } } }, pull_request: pull };
+  const outdated = {
+    id: 1, name: 'garnet/runtime-diff', app: { id: 15368 }, conclusion: 'success',
+    external_id: `1:main:${base}`,
+    output: { summary: `[Garnet Runtime Review](${url}) · compared with \`${base}\`.` }
+  };
+  const writes = [];
+  const gh = async (path, body, method) => {
+    if (path === 'pulls/1') return pull;
+    if (path === `commits/${head}/check-runs?check_name=garnet%2Fruntime-diff&filter=all&per_page=100&page=1`) return {
+      check_runs: [
+        outdated, { ...outdated, id: 2, external_id: '' },
+        { ...outdated, id: 3, external_id: `1:exhibit/playwright:${base}` },
+        { ...outdated, id: 4, app: { id: 1 } },
+        { ...outdated, id: 5, output: { summary: outdated.output.summary.replace('/pull/1', '/pull/2') } },
+        { ...outdated, id: 6, conclusion: 'failure' }
+      ]
+    };
+    writes.push({ path, body, method });
+  };
+  assert.equal(await invalidateRetargetedChecks(event, repo, gh), 2);
+  assert.deepEqual(writes.map(({ path, body, method }) => [path, body.status, body.conclusion, method]), [
+    ['check-runs/1', 'completed', 'action_required', 'PATCH'],
+    ['check-runs/2', 'completed', 'action_required', 'PATCH']
+  ]);
+  assert.equal(await invalidateRetargetedChecks({ ...event, changes: {} }, repo, async () => assert.fail('metadata edit')), undefined);
+  assert.equal(await invalidateRetargetedChecks(event, repo, async path => {
+    assert.equal(path, 'pulls/1');
+    return { ...pull, base: { ...pull.base, ref: 'main' } };
+  }), undefined);
 });
 
 test('MCP transport handles JSON and SSE, but never parses tool text as evidence', async () => {

@@ -10,6 +10,7 @@ const profileID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const captureWorkflow = '.github/workflows/ci.yml';
 const captureJob = 'runtime-build';
 const checkName = 'garnet/runtime-diff';
+const actionsAppId = 15368;
 const supportedBases = new Set(['main', 'exhibit/playwright']);
 const endpoint = 'https://api.garnet.ai/api/v2/mcp';
 const exec = promisify(execFile);
@@ -181,6 +182,38 @@ function sameBase(left, right) {
   return left?.ref === right?.ref && left?.sha === right?.sha;
 }
 
+function checkBase(pr, base) {
+  return `${pr}:${base.ref}:${base.sha}`;
+}
+
+export async function invalidateRetargetedChecks(event, repo, gh) {
+  const previous = event?.changes?.base?.ref?.from;
+  const target = event?.pull_request?.base?.ref;
+  if (event?.action !== 'edited' || !previous || previous === target || !supportedBases.has(target)) return;
+  const { number: pr, head } = event.pull_request;
+  if (!Number.isSafeInteger(pr) || pr <= 0 || !sha.test(head?.sha)) return;
+  const pull = await gh(`pulls/${pr}`);
+  if (!current(pull, { repo, head: head.sha }) || pull.base.ref !== target) return;
+  const currentBase = checkBase(pr, pull.base);
+  const commentPrefix = `[Garnet Runtime Review](https://github.com/${repo}/pull/${pr}#issuecomment-`;
+  let invalidated = 0;
+  for (let page = 1; ; page++) {
+    const result = await gh(`commits/${head.sha}/check-runs?check_name=${encodeURIComponent(checkName)}&filter=all&per_page=100&page=${page}`);
+    if (!Array.isArray(result?.check_runs)) throw new Error('GitHub did not return check runs');
+    for (const check of result.check_runs) {
+      if (check.name !== checkName || check.app?.id !== actionsAppId || check.conclusion !== 'success' ||
+          check.external_id === currentBase || !check.output?.summary?.startsWith(commentPrefix) ||
+          !Number.isSafeInteger(check.id) || check.id <= 0) continue;
+      await gh(`check-runs/${check.id}`, {
+        status: 'completed', conclusion: 'action_required',
+        output: { title: 'No usable runtime comparison', summary: 'The PR base changed. Waiting for a new capture and comparison.' }
+      }, 'PATCH');
+      invalidated++;
+    }
+    if (result.check_runs.length < 100) return invalidated;
+  }
+}
+
 export async function publish(run, repo, gh, readEvidence = evidence) {
   if (run?.pull_requests?.length !== 1) throw new Error('Missing trusted run context');
   const context = selectors(repo, run.pull_requests[0].number, run.head_sha, run.id, run.run_attempt);
@@ -191,7 +224,7 @@ export async function publish(run, repo, gh, readEvidence = evidence) {
   if (!current(initial, context)) return;
   const base = initial.base.sha;
   const check = await gh('check-runs', {
-    name: checkName, head_sha: head, status: 'in_progress',
+    name: checkName, head_sha: head, status: 'in_progress', external_id: checkBase(pr, initial.base),
     details_url: `https://github.com/${repo}/actions/runs/${run.id}`,
     output: { title: 'Waiting for Garnet evidence', summary: 'Only the current PR head is evaluated.' }
   });
@@ -235,11 +268,17 @@ export async function publish(run, repo, gh, readEvidence = evidence) {
   return `${checkName}: ${verdict} on ${head}`;
 }
 
-export function buildEgress(profile) {
+function isWorkloadStep(step) {
+  if (typeof step !== 'string') return false;
+  const name = step.replace(/^\d+\.\s+/, '').trim();
+  return !!name && !/^(?:<unknown>|Runner Processes|Set up job|Complete job|Post Run(?: .*)?)$/i.test(name);
+}
+
+export function workloadEgress(profile) {
   const peers = profile.data.network.egress.peers;
   const names = new Set();
   for (const peer of peers) {
-    if (!Array.isArray(peer?.proc_trees) || !peer.proc_trees.some(proc => /^(?:\d+\. )?Build$/.test(proc?.github_step))) continue;
+    if (!Array.isArray(peer?.proc_trees) || !peer.proc_trees.some(proc => isWorkloadStep(proc?.github_step))) continue;
     const destinations = Array.isArray(peer.remote_names) && peer.remote_names.length
       ? peer.remote_names : [peer.remote_address];
     for (const name of destinations) {
@@ -267,20 +306,25 @@ async function receipt(args) {
   }
   console.log(JSON.stringify({
     MCP: endpoint, tool: 'profiles', id: result.profile.id, ...context,
-    job: captureJob, appComment: result.url, observedBuildDestinations: buildEgress(result.profile)
+    job: captureJob, appComment: result.url, observedWorkloadDestinations: workloadEgress(result.profile)
   }, null, 2));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    if (process.argv[2] === 'publish' && process.argv.length === 3) {
+    if (['publish', 'invalidate-retarget'].includes(process.argv[2]) && process.argv.length === 3) {
       const { GITHUB_REPOSITORY: repo, GITHUB_TOKEN: token, GITHUB_EVENT_PATH: event } = process.env;
       if (!token || !event) throw new Error('Missing trusted workflow context');
-      const { workflow_run: run } = JSON.parse(await readFile(event, 'utf8'));
-      const status = await publish(run, repo, github(repo, token));
-      if (status) console.log(status);
+      const payload = JSON.parse(await readFile(event, 'utf8'));
+      if (process.argv[2] === 'publish') {
+        const status = await publish(payload.workflow_run, repo, github(repo, token));
+        if (status) console.log(status);
+      } else {
+        const count = await invalidateRetargetedChecks(payload, repo, github(repo, token));
+        if (count !== undefined) console.log(`Invalidated ${count} passing comparison(s) for the previous base.`);
+      }
     } else if (process.argv[2] === 'receipt' && process.argv.length === 8) await receipt(process.argv.slice(3));
-    else throw new Error('Use publish or receipt <owner/repo> <pr> <head> <run> <attempt>');
+    else throw new Error('Use publish, invalidate-retarget, or receipt <owner/repo> <pr> <head> <run> <attempt>');
   } catch {
     console.error('Runtime Review stopped: selectors, evidence, or required GitHub access were not available.');
     process.exitCode = 1;
