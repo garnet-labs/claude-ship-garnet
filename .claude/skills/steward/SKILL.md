@@ -42,6 +42,7 @@ missing/incomplete evidence, or Code Review feedback. Don't approve or merge.
    npm pkg set 'dependencies.@exhibit/normalize-label=file:../../fixtures/npm/exhibit-normalize-label-1.0.1.tgz' --workspace @exhibit/format-label
    npm install --package-lock-only --ignore-scripts --no-audit --no-fund
    npm ci --ignore-scripts --no-audit --no-fund
+   npm ls @exhibit/normalize-label@1.0.1 --workspace @exhibit/format-label
    npm run build
    ```
 
