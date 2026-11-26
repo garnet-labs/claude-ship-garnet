@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildEgress, decide, evidence, isGarnetComment, matchesRun, mcp, profileFor, publish } from '../scripts/runtime-review.mjs';
+import { decide, evidence, isGarnetComment, matchesRun, mcp, profileFor, publish, workloadEgress } from '../scripts/runtime-review.mjs';
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -77,7 +77,7 @@ function profile() {
   };
 }
 
-test('MCP profiles use exact selectors, paginate, and expose only build destinations', async () => {
+test('MCP profiles use exact selectors and paginate', async () => {
   const result = await profileFor(context, id, async (name, args) => {
     assert.equal(name, 'profiles');
     assert.equal(args.githubOrg, 'garnet-labs');
@@ -90,7 +90,20 @@ test('MCP profiles use exact selectors, paginate, and expose only build destinat
     return { items: [], pageInfo: { hasNextPage: true, endCursor: 'page2' } };
   });
   assert.equal(result.id, id);
-  assert.deepEqual(buildEgress(result), ['example.com']);
+  assert.deepEqual(workloadEgress(result), ['example.com']);
+});
+
+test('receipt includes workload egress from install, smoke, and build, not runner-only peers', () => {
+  const item = profile();
+  item.data.network.egress.peers.push(
+    { remote_names: ['install.example', 'example.com'], proc_trees: [{ github_step: '0. Install dependencies' }] },
+    { remote_address: '10.0.0.1', proc_trees: [{ github_step: 'Smoke test' }, { github_step: '99. Runner Processes' }] },
+    { remote_address: '169.254.169.254', proc_trees: [{ github_step: 'Test' }] },
+    { remote_names: ['unattributed.example'], proc_trees: [{ github_step: '<unknown>' }, {}] },
+    { remote_names: ['setup.example'], proc_trees: [{ github_step: '1. Set up job' }] },
+    { remote_names: ['post.example'], proc_trees: [{ github_step: '8. Post Run checkout' }] }
+  );
+  assert.deepEqual(workloadEgress(item), ['10.0.0.1', '169.254.169.254', 'example.com', 'install.example']);
 });
 
 test('stale, missing, duplicate and unreadable observations do not pass', async () => {

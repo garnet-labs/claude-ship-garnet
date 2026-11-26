@@ -28,6 +28,8 @@ jobs:
       - uses: garnet-org/action@24833a47c19aad605bb10bcd9b8cad8f318ca187 # v2.6.0
       - name: Install dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Sentry CLI install + smoke
+        run: node node_modules/@sentry/cli/scripts/install.js && npx sentry-cli --version
       - name: Build
         run: npm run build
       - name: Let sensor settle

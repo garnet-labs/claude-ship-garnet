@@ -205,11 +205,17 @@ export async function publish(run, repo, gh, readEvidence = evidence) {
   return `${checkName}: ${verdict} on ${head}`;
 }
 
-export function buildEgress(profile) {
+function isWorkloadStep(step) {
+  if (typeof step !== 'string') return false;
+  const name = step.replace(/^\d+\.\s+/, '').trim();
+  return !!name && !/^(?:<unknown>|Runner Processes|Set up job|Complete job|Post Run(?: .*)?)$/i.test(name);
+}
+
+export function workloadEgress(profile) {
   const peers = profile.data.network.egress.peers;
   const names = new Set();
   for (const peer of peers) {
-    if (!Array.isArray(peer?.proc_trees) || !peer.proc_trees.some(proc => /^(?:\d+\. )?Build$/.test(proc?.github_step))) continue;
+    if (!Array.isArray(peer?.proc_trees) || !peer.proc_trees.some(proc => isWorkloadStep(proc?.github_step))) continue;
     const destinations = Array.isArray(peer.remote_names) && peer.remote_names.length
       ? peer.remote_names : [peer.remote_address];
     for (const name of destinations) {
@@ -237,7 +243,7 @@ async function receipt(args) {
   }
   console.log(JSON.stringify({
     MCP: endpoint, tool: 'profiles', id: result.profile.id, ...context,
-    job: captureJob, appComment: result.url, observedBuildDestinations: buildEgress(result.profile)
+    job: captureJob, appComment: result.url, observedWorkloadDestinations: workloadEgress(result.profile)
   }, null, 2));
 }
 
