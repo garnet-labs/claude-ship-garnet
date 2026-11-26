@@ -92,9 +92,10 @@ If you arm Steward with `@claude steward`, report the manual trigger; if a
 person pushes the correction, do not report it as a Steward fix.
 
 Do not present a timed-out, first, incomplete, or stale record as a pass.
-Rerun the capture if the profile is unavailable. A passing check means only
-that no new behavior or removals were recorded in this comparison.
-Removal-only comparisons stay blocked for human review without requesting a
+Rerun the capture if the profile is unavailable. A passing check means no
+new workload connections were recorded in this comparison. Garnet may still
+record additions or removals not tied to a workflow step. Workload
+removal-only comparisons stay blocked for human review without requesting a
 Steward fix.
 
 ## Local checks
