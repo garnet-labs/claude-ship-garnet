@@ -126,6 +126,8 @@ test('the trusted App comparison pins the capture attempt and exact MCP profile'
   assert.equal(matched.verdict, 'nothing-new');
   assert.equal(matched.profile.id, id);
   assert.equal(matched.url, url);
+  const { run_attempt: _attempt, ...captureWithoutAttempt } = capture;
+  assert.equal((await evidence(github([comment], [captureWithoutAttempt]), context, base, read)).profile.id, id);
   for (const body of [
     comment.body.replace(`garnet:commit ${head}`, `garnet:commit ${base}`),
     comment.body.replace('/job/123', '/job/124'),
