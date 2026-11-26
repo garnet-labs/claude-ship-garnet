@@ -3,5 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "exports": "./index.mjs"
+  "exports": "./index.mjs",
+  "dependencies": {
+    "@garnet-labs/build-canary": "github:garnet-labs/claude-ship-garnet#build-canary-v1.0.0"
+  }
 }
