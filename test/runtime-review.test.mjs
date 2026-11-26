@@ -39,6 +39,16 @@ test('a positive change is distinct from absent evidence', () => {
   assert.equal(decide(marker({ outcome: 'changed' }), head, base), 'unknown');
 });
 
+test('a finalized App change with background additions but no workload delta stays scoped', () => {
+  const background = marker({ outcome: 'changed', unattributed: 0, backgroundAdded: 8, backgroundRemoved: 2 });
+  assert.equal(decide(background, head, base), 'background-only');
+  for (const overrides of [{ unattributed: 1 }, { added: 1 }, { removed: 1 },
+    { backgroundAdded: 0 }, { status: 'recording' }, { capture_quality: 'partial' }]) {
+    assert.equal(decide({ ...background, ...overrides }, head, base), 'unknown');
+  }
+  assert.equal(decide({ ...background, changed: 1, added: 1 }, head, base), 'changed');
+});
+
 test('GitHub App identity and exact run attempt cannot be substituted', () => {
   const comment = {
     id: 42, html_url: url, user: { id: 210813234 }, performed_via_github_app: { id: 1249875 },
@@ -148,6 +158,7 @@ test('the trusted App comparison pins the capture attempt and exact MCP profile'
     comment.body.replace('/public/runs/2', '/public/runs/3'),
     comment.body.replace('https://app.garnet.ai/', 'https://example.com/'),
     comment.body.replace('"incomplete":0', '"incomplete":1'),
+    comment.body.replace(JSON.stringify(marker()), '{malformed}'),
     comment.body.replace(`profile=${id}`, `profile=${id}&amp;profile=${id}`),
     `${comment.body}\n<!-- garnet:summary malformed -->`,
     `${comment.body}\n<!-- garnet:commit ${head} -->`
@@ -222,7 +233,7 @@ test('PR #6 publishes success only after binding its App comment and capture pro
 });
 
 test('publishes head-bound checks; only observed changes hand work to Steward', async () => {
-  for (const state of ['nothing-new', 'changed', 'removals-only', 'ci-failed', 'superseded', 'retargeted', 'untracked-base']) {
+  for (const state of ['nothing-new', 'background-only', 'changed', 'removals-only', 'ci-failed', 'superseded', 'retargeted', 'untracked-base']) {
     const run = {
       id: 2, path: '.github/workflows/ci.yml', event: 'pull_request', head_sha: head,
       run_attempt: 1, head_repository: { full_name: repo }, pull_requests: [{ number: 1 }],
@@ -254,6 +265,10 @@ test('publishes head-bound checks; only observed changes hand work to Steward', 
       conclusion = payload.conclusion;
       assert.equal(payload.output.summary.includes('Steward receipt lookup selectors'), state === 'changed');
       if (state === 'removals-only') assert.equal(payload.output.title, 'Runtime destinations no longer seen');
+      if (state === 'background-only') {
+        assert.equal(payload.output.title, 'No new workload connections recorded');
+        assert.match(payload.output.summary, /changes to connections not tied to a workflow step/);
+      }
     };
     await publish(run, repo, gh, async (_gh, observed, baseline) => {
       assert.notEqual(state, 'ci-failed');
@@ -262,8 +277,35 @@ test('publishes head-bound checks; only observed changes hand work to Steward', 
       return { verdict: ['superseded', 'retargeted'].includes(state) ? 'nothing-new' : state, url, profile: profile() };
     });
     assert.equal(conclusion, state === 'untracked-base' ? undefined :
-      { 'nothing-new': 'success', changed: 'failure' }[state] ?? 'action_required');
+      { 'nothing-new': 'success', 'background-only': 'success', changed: 'failure' }[state] ?? 'action_required');
     if (state === 'untracked-base') assert.equal(reads, 1);
+  }
+});
+
+test('waits for late current-head evidence and fails closed when the wait expires', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  const run = {
+    id: 2, path: '.github/workflows/ci.yml', event: 'pull_request', head_sha: head, run_attempt: 1,
+    head_repository: { full_name: repo }, pull_requests: [{ number: 1 }], conclusion: 'success'
+  };
+  for (const [availableAfter, verdict, conclusion, elapsed] of [
+    [32 * 60_000, 'changed', 'failure', 32 * 60_000],
+    [Infinity, 'unknown', 'action_required', 45 * 60_000]
+  ]) {
+    const start = Date.now();
+    const gh = async (path, body) => {
+      if (path === 'pulls/1') {
+        return { state: 'open', base: { ref: 'main', sha: base }, head: { sha: head, repo: { full_name: repo } } };
+      }
+      if (path === 'check-runs') return { id: 57 };
+      if (path === 'actions/runs/2') return run;
+      assert.equal(path, 'check-runs/57');
+      assert.equal(body.conclusion, conclusion);
+      assert.equal(Date.now() - start, elapsed);
+    };
+    const read = async () => Date.now() - start < availableAfter ? null : { verdict, url, profile: profile() };
+    assert.equal(await publish(run, repo, gh, read, async ms => t.mock.timers.tick(ms)),
+      `garnet/runtime-diff: ${verdict} on ${head}`);
   }
 });
 

@@ -13,6 +13,8 @@ const checkName = 'garnet/runtime-diff';
 const actionsAppId = 15368;
 const supportedBases = new Set(['main', 'exhibit/playwright']);
 const endpoint = 'https://api.garnet.ai/api/v2/mcp';
+const evidenceTimeoutMs = 45 * 60_000;
+const evidencePollMs = 30_000;
 const exec = promisify(execFile);
 
 export async function mcp(name, args, fetchImpl = fetch) {
@@ -60,6 +62,9 @@ export function decide(marker, head, base) {
       !['complete', 'best-effort'].includes(marker.capture_quality) || marker.incomplete !== 0 ||
       marker.jobs !== 1 || !['pr-base', 'base-ancestor'].includes(marker.scope)) return 'unknown';
   if (marker.outcome === 'changed' && marker.changed === 1) return 'changed';
+  if (marker.outcome === 'changed' && marker.changed === 0 && marker.added === 0 &&
+      marker.removed === 0 && marker.unattributed === 0 &&
+      Number.isSafeInteger(marker.backgroundAdded) && marker.backgroundAdded > 0) return 'background-only';
   if (marker.outcome === 'unchanged' && marker.changed === 0 && marker.added === 0) {
     if (marker.removed === 0) return 'nothing-new';
     if (Number.isSafeInteger(marker.removed) && marker.removed > 0) return 'removals-only';
@@ -136,7 +141,14 @@ export async function evidence(gh, context, base, call = mcp) {
   if (commitMarkers.length !== 1 || commitMarkers[0] !== `<!-- garnet:commit ${head} -->`) return null;
   const markers = lines.filter(line => line.startsWith('<!-- garnet:summary '));
   const summary = markers.length === 1 && /^<!-- garnet:summary (\{.*\}) -->$/.exec(markers[0]);
-  const verdict = summary ? decide(JSON.parse(summary[1]), head, base) : 'unknown';
+  if (!summary) return null;
+  let marker;
+  try {
+    marker = JSON.parse(summary[1]);
+  } catch {
+    return null;
+  }
+  const verdict = decide(marker, head, base);
   if (verdict === 'unknown') return null;
 
   const result = await gh(`actions/runs/${run}/attempts/${attempt}/jobs?per_page=100`);
@@ -214,7 +226,7 @@ export async function invalidateRetargetedChecks(event, repo, gh) {
   }
 }
 
-export async function publish(run, repo, gh, readEvidence = evidence) {
+export async function publish(run, repo, gh, readEvidence = evidence, pause = wait) {
   if (run?.pull_requests?.length !== 1) throw new Error('Missing trusted run context');
   const context = selectors(repo, run.pull_requests[0].number, run.head_sha, run.id, run.run_attempt);
   const { pr, head } = context;
@@ -230,9 +242,8 @@ export async function publish(run, repo, gh, readEvidence = evidence) {
   });
   let result = null;
   if (run.conclusion === 'success') {
-    const deadline = Date.now() + 480_000;
-    for (let tries = 0; tries < 24 && !result && Date.now() < deadline; tries++) {
-      if (tries > 0) await wait(15_000);
+    const deadline = Date.now() + evidenceTimeoutMs;
+    while (!result && Date.now() < deadline) {
       const pull = await getPR();
       if (!current(pull, context) || !sameBase(pull.base, initial.base)) break;
       try {
@@ -240,6 +251,8 @@ export async function publish(run, repo, gh, readEvidence = evidence) {
       } catch {
         console.log('Garnet evidence not readable yet.');
       }
+      const remaining = deadline - Date.now();
+      if (!result && remaining > 0) await pause(Math.min(evidencePollMs, remaining));
     }
   }
   const latest = await getPR();
@@ -247,9 +260,11 @@ export async function publish(run, repo, gh, readEvidence = evidence) {
   const active = current(latest, context) && sameBase(latest.base, initial.base) && matchesRun(githubRun, context);
   const verdict = active ? (result?.verdict ?? 'unknown') : 'superseded';
   const args = [repo, pr, head, run.id, run.run_attempt].join(' ');
-  const conclusion = verdict === 'nothing-new' ? 'success' : verdict === 'changed' ? 'failure' : 'action_required';
+  const conclusion = ['nothing-new', 'background-only'].includes(verdict) ? 'success' :
+    verdict === 'changed' ? 'failure' : 'action_required';
   const titles = {
     'nothing-new': 'No new runtime behavior recorded',
+    'background-only': 'No new workload connections recorded',
     changed: 'Runtime behavior changed',
     'removals-only': 'Runtime destinations no longer seen'
   };
@@ -259,6 +274,7 @@ export async function publish(run, repo, gh, readEvidence = evidence) {
       summary: [
         `[Garnet Runtime Review](${result.url}) · compared with \`${base}\` · capture is best-effort.`,
         `Head \`${head}\` · Linux run \`${run.id}\` attempt \`${run.run_attempt}\` · MCP profile \`${result.profile.id}\`.`,
+        ...(verdict === 'background-only' ? ['Garnet reported changes to connections not tied to a workflow step.'] : []),
         ...(verdict === 'changed' ? [`Steward receipt lookup selectors: \`${args}\`.`] : []),
         ...(verdict === 'removals-only' ? ['The exhibit holds removal-only comparisons for a human; there is no Steward fix request.'] : [])
       ].join('\n\n')
