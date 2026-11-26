@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { formatLabel } from '@exhibit/format-label';
+import { buildLabel, formatLabel } from '@exhibit/format-label';
 
-const label = await formatLabel('  Garnet Exhibit  ');
+const label = await formatLabel(buildLabel);
 assert.equal(label, 'garnet exhibit');
 console.log(label);
