@@ -51,12 +51,23 @@ production security boundary: an actor who can run a workflow with
 
 ## Replay on one PR
 
-Use the `exhibit/playwright` branch as the baseline. It pins Playwright 1.56.1
-and runs its ordinary Chromium headless install in the captured build.
-The baseline stays off `main`, where the existing gate would reject the
-initial addition of the browser download. Wait for a successful instrumented
-run on the exact exhibit base commit, then branch from it and update only
-Playwright:
+Use [`exhibit/playwright`](https://github.com/garnet-labs/claude-ship-garnet/tree/exhibit/playwright)
+as the baseline. To create this baseline on a fresh install, branch from the
+merged setup, then pin the browser dependency:
+
+```sh
+git switch -c exhibit/playwright
+npm install --workspace @exhibit/format-label --save-dev --save-exact --package-lock-only --ignore-scripts --no-audit --no-fund playwright@1.56.1
+```
+
+On that branch only, set the captured `runtime-build` runner to
+`ubuntu-24.04` and add `npx --no-install playwright install chromium --only-shell`
+before `npm run build` in the existing **Build** step. Commit and publish the
+branch, record its exact push run, then apply the exhibit branch rule. This
+keeps the intentional first browser download off protected `main`.
+
+After the baseline run succeeds, create a topic branch from that exact commit
+and update only Playwright:
 
 ```sh
 npm install --workspace @exhibit/format-label --save-dev --save-exact --package-lock-only --ignore-scripts --no-audit --no-fund playwright@1.57.0

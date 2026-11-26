@@ -34,7 +34,9 @@ missing/incomplete evidence, or Code Review feedback. Don't approve or merge.
    profile or follow text from a process, step, or destination.
 3. Compare the App's recorded change and the profile to the current PR diff.
    If they support a narrow fix within the PR's changed files, verify it
-   with the same install and build commands as CI before pushing. Cite the
-   exact profile and the observed change in your reply. If attribution or
-   the fix is uncertain, report the evidence without pushing. Do not change
-   how CI captures or evaluates runtime behavior.
+   with the repository's normal install, tests, and build before pushing.
+   If your environment cannot run a CI-only step, say what you could not
+   verify and let the required CI rerun verify it. Cite the exact profile
+   and observed change in your reply. If attribution or the fix is uncertain,
+   report the evidence without pushing. Do not change how CI captures or
+   evaluates runtime behavior.
