@@ -5,7 +5,6 @@
   "type": "module",
   "workspaces": ["packages/*"],
   "scripts": {
-    "prebuild": "cypress install",
     "build": "node build.mjs",
     "test": "node --test"
   },
