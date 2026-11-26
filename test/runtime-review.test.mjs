@@ -317,6 +317,28 @@ test('waits for late current-head evidence and fails closed when the wait expire
   }
 });
 
+test('stops waiting once a newer CI attempt supersedes this one', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  const run = {
+    id: 2, path: '.github/workflows/ci.yml', event: 'pull_request', head_sha: head, run_attempt: 1,
+    head_repository: { full_name: repo }, pull_requests: [{ number: 1 }], conclusion: 'success'
+  };
+  const start = Date.now();
+  let conclusion;
+  const gh = async (path, body) => {
+    if (path === 'pulls/1') {
+      return { state: 'open', base: { ref: 'main', sha: base }, head: { sha: head, repo: { full_name: repo } } };
+    }
+    if (path === 'check-runs') return { id: 57 };
+    if (path === 'actions/runs/2') return Date.now() - start < 60_000 ? run : { ...run, run_attempt: 2 };
+    assert.equal(path, 'check-runs/57');
+    conclusion = body.conclusion;
+    assert.equal(Date.now() - start, 60_000);
+  };
+  await publish(run, repo, gh, async () => null, async ms => t.mock.timers.tick(ms));
+  assert.equal(conclusion, 'action_required');
+});
+
 test('retargeting invalidates only old passing runtime checks for the same PR and head', async () => {
   const tip = 'c'.repeat(40);
   const pull = {

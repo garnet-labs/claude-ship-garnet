@@ -260,9 +260,10 @@ export async function publish(run, repo, gh, readEvidence = evidence, pause = wa
   if (run.conclusion === 'success') {
     const deadline = Date.now() + evidenceTimeoutMs;
     while (true) {
-      const pull = await getPR();
-      if (!current(pull, context) || !sameBase(pull.base, initial.base)) break;
       try {
+        const pull = await getPR();
+        const githubRun = await gh(`actions/runs/${run.id}`);
+        if (!current(pull, context) || !sameBase(pull.base, initial.base) || !matchesRun(githubRun, context)) break;
         result = await readEvidence(gh, context, base);
       } catch {
         console.log('Garnet evidence not readable yet.');
