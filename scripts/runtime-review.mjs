@@ -55,15 +55,15 @@ function github(repo, token) {
 export function decide(review, head, base) {
   const marker = review?.envelope;
   if (!sha.test(head) || !sha.test(base) ||
-      review?.determinable !== true || review.bound_to_head !== true ||
+      review?.bound_to_head !== true ||
       review.head_sha !== head || review.marker_commit !== head || marker?.commit !== head ||
       review.status !== 'finalized' || marker.status !== 'finalized' ||
       !['complete', 'best-effort'].includes(review.capture_quality) ||
       marker.capture_quality !== review.capture_quality || marker.incomplete !== 0 ||
       marker.jobs !== 1 || !['pr-base', 'base-ancestor'].includes(review.scope) || marker.scope !== review.scope ||
-      marker.previous !== base || marker.outcome !== review.app_outcome) return 'unknown';
-  if (review.app_outcome === 'changed' && marker.changed === 1) return 'changed';
-  if (review.app_outcome === 'unchanged' && marker.changed === 0 && marker.added === 0) {
+      marker.previous !== base || marker.outcome !== review.result) return 'unknown';
+  if (review.result === 'changed' && marker.changed === 1) return 'changed';
+  if (review.result === 'unchanged' && marker.changed === 0 && marker.added === 0) {
     if (marker.removed === 0) return 'nothing-new';
     if (Number.isSafeInteger(marker.removed) && marker.removed > 0) return 'removals-only';
   }
@@ -118,7 +118,7 @@ export function isGarnetComment(comment, head, url) {
 export async function evidence(gh, context, base, call = mcp) {
   const { repo, pr, head, run } = context;
   const [githubOrg, name] = repo.split('/');
-  const review = await call('outcome', { githubOrg, repo: name, pullNumber: pr });
+  const review = await call('pr_review', { githubOrg, repo: name, pullNumber: pr });
   const verdict = decide(review, head, base);
   if (verdict === 'unknown' || !Array.isArray(review.profile_ids) || review.profile_ids.length !== 1) return null;
   const url = `https://github.com/${repo}/pull/${pr}#issuecomment-`;

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import pr6 from './pr-review-pr6.json' with { type: 'json' };
 import { decide, evidence, isGarnetComment, matchesRun, mcp, profileFor, publish, workloadEgress } from '../scripts/runtime-review.mjs';
 
 const head = 'a'.repeat(40);
@@ -11,15 +12,15 @@ const context = { repo, pr: 1, head, run: 2, attempt: 1 };
 
 function review(overrides = {}, envelopeOverrides = {}) {
   const item = {
-    determinable: true, bound_to_head: true, head_sha: head, marker_commit: head,
+    bound_to_head: true, head_sha: head, marker_commit: head,
     status: 'finalized', capture_quality: 'best-effort', scope: 'base-ancestor',
-    app_outcome: 'unchanged', profile_ids: [id], comment_url: url, ...overrides
+    result: 'unchanged', profile_ids: [id], comment_url: url, ...overrides
   };
   return {
     ...item,
     envelope: {
       commit: head, previous: base, status: 'finalized', capture_quality: 'best-effort',
-      incomplete: 0, jobs: 1, scope: 'base-ancestor', outcome: item.app_outcome,
+      incomplete: 0, jobs: 1, scope: 'base-ancestor', outcome: item.result,
       changed: 0, added: 0, removed: 0, ...envelopeOverrides
     }
   };
@@ -33,19 +34,30 @@ test('only a finalized, scoped, exact-base no-change record passes', () => {
   assert.equal(decide(review({ marker_commit: base }), head, base), 'unknown');
   assert.equal(decide(review({ head_sha: base }), head, base), 'unknown');
   assert.equal(decide(review({ status: 'pending' }), head, base), 'unknown');
-  assert.equal(decide(review({ determinable: false }), head, base), 'unknown');
+  assert.equal(decide(review({ bound_to_head: false }), head, base), 'unknown');
   assert.equal(decide(review({ capture_quality: 'partial' }), head, base), 'unknown');
   assert.equal(decide(review({}, { incomplete: 1 }), head, base), 'unknown');
   assert.equal(decide(review({}, { jobs: 0 }), head, base), 'unknown');
   assert.equal(decide(review({}, { removed: 1 }), head, base), 'removals-only');
-  assert.equal(decide(review({ app_outcome: 'first' }), head, base), 'unknown');
+  assert.equal(decide(review({ result: 'first' }), head, base), 'unknown');
   assert.equal(decide(null, head, base), 'unknown');
 });
 
 test('a positive change is distinct from absent evidence', () => {
-  const changed = review({ app_outcome: 'changed' }, { changed: 1, added: 1 });
+  const changed = review({ result: 'changed' }, { changed: 1, added: 1 });
   assert.equal(decide(changed, head, base), 'changed');
-  assert.equal(decide(review({ app_outcome: 'changed' }), head, base), 'unknown');
+  assert.equal(decide(review({ result: 'changed' }), head, base), 'unknown');
+});
+
+test('the recorded PR #6 pr_review response passes only when finalized and bound to the requested head', () => {
+  const { head_sha: recordedHead, envelope: { previous: recordedBase } } = pr6;
+  assert.equal(decide(pr6, recordedHead, recordedBase), 'nothing-new');
+  for (const status of ['missing', 'recording', 'stale', 'malformed', 'incomplete', 'unsupported']) {
+    assert.equal(decide({ ...pr6, status }, recordedHead, recordedBase), 'unknown', status);
+  }
+  assert.equal(decide(pr6, head, recordedBase), 'unknown');
+  assert.equal(decide({ ...pr6, result: undefined }, recordedHead, recordedBase), 'unknown');
+  assert.equal(decide({ ...pr6, result: 'changed' }, recordedHead, recordedBase), 'unknown');
 });
 
 test('GitHub App identity and exact run attempt cannot be substituted', () => {
@@ -121,7 +133,7 @@ test('stale, missing, duplicate and unreadable observations do not pass', async 
 test('the hosted comparison must match the linked App comment and capture run', async () => {
   const outcome = review();
   const read = async (name, args) => {
-    if (name === 'outcome') {
+    if (name === 'pr_review') {
       assert.deepEqual(args, { githubOrg: 'garnet-labs', repo: 'claude-ship-garnet', pullNumber: 1 });
       return outcome;
     }
@@ -191,11 +203,11 @@ test('publishes head-bound checks; only observed changes hand work to Steward', 
 test('MCP transport handles JSON and SSE, but never parses tool text as evidence', async () => {
   const value = { one: 1 };
   const result = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { structuredContent: value } });
-  assert.deepEqual(await mcp('outcome', {}, async () => new Response(result)), value);
-  assert.deepEqual(await mcp('outcome', {}, async () => new Response(`data: ${result}\n\n`, {
+  assert.deepEqual(await mcp('pr_review', {}, async () => new Response(result)), value);
+  assert.deepEqual(await mcp('pr_review', {}, async () => new Response(`data: ${result}\n\n`, {
     headers: { 'Content-Type': 'text/event-stream' }
   })), value);
-  await assert.rejects(mcp('outcome', {}, async () => Response.json({
+  await assert.rejects(mcp('pr_review', {}, async () => Response.json({
     id: 1, result: { content: [{ type: 'text', text: JSON.stringify(value) }] }
   })), /did not return structured evidence/);
 });

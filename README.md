@@ -15,7 +15,7 @@ the GitHub repository is public so the demo needs no Garnet secrets.
 | [PR Steward](https://code.claude.com/docs/en/pr-steward#what-pr-steward-fixes) | Works from a real failed GitHub check. The checked-in skill tells it to read the exact hosted MCP profile before making a narrow fix. | Treat missing evidence as a fix request. |
 
 The custom check runs from the default branch after CI. It executes no PR
-code and downloads no PR artifacts. It uses the public Garnet MCP `outcome`
+code and downloads no PR artifacts. It uses the public Garnet MCP `pr_review`
 and `profiles` tools, verifies the linked Garnet App comment, and requires the
 current head, exact base commit, run, attempt, and recorded job to agree.
 The exhibit is for trusted same-repository branches, not fork PRs or a
