@@ -5,6 +5,7 @@ import { decide, evidence, invalidateRetargetedChecks, isGarnetComment, matchesR
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
+const prBase = { ref: 'main', sha: base };
 const id = '73562dce-ddbc-464b-aea0-beb467d8d615';
 const repo = 'garnet-labs/claude-ship-garnet';
 const url = `https://github.com/${repo}/pull/1#issuecomment-42`;
@@ -146,12 +147,12 @@ test('the trusted App comparison pins the capture attempt and exact MCP profile'
       return { total_count: jobs.length, jobs };
     };
   }
-  const matched = await evidence(github([comment]), context, base, read);
+  const matched = await evidence(github([comment]), context, prBase, read);
   assert.equal(matched.verdict, 'nothing-new');
   assert.equal(matched.profile.id, id);
   assert.equal(matched.url, url);
   const { run_attempt: _attempt, ...captureWithoutAttempt } = capture;
-  assert.equal((await evidence(github([comment], [captureWithoutAttempt]), context, base, read)).profile.id, id);
+  assert.equal((await evidence(github([comment], [captureWithoutAttempt]), context, prBase, read)).profile.id, id);
   for (const body of [
     comment.body.replace(`garnet:commit ${head}`, `garnet:commit ${base}`),
     comment.body.replace('/job/123', '/job/124'),
@@ -162,21 +163,22 @@ test('the trusted App comparison pins the capture attempt and exact MCP profile'
     comment.body.replace(`profile=${id}`, `profile=${id}&amp;profile=${id}`),
     `${comment.body}\n<!-- garnet:summary malformed -->`,
     `${comment.body}\n<!-- garnet:commit ${head} -->`
-  ]) assert.equal(await evidence(github([{ ...comment, body }]), context, base, read), null);
-  assert.equal(await evidence(github([comment, comment]), context, base, read), null);
-  assert.equal(await evidence(github([{ ...comment, user: { id: 1 } }]), context, base, read), null);
-  assert.equal(await evidence(github([comment], [{ ...capture, run_attempt: 2 }]), context, base, read), null);
-  assert.equal(await evidence(github([comment], [capture, capture]), context, base, read), null);
+  ]) assert.equal(await evidence(github([{ ...comment, body }]), context, prBase, read), null);
+  assert.equal(await evidence(github([comment, comment]), context, prBase, read), null);
+  assert.equal(await evidence(github([{ ...comment, user: { id: 1 } }]), context, prBase, read), null);
+  assert.equal(await evidence(github([comment], [{ ...capture, run_attempt: 2 }]), context, prBase, read), null);
+  assert.equal(await evidence(github([comment], [capture, capture]), context, prBase, read), null);
 
   const pagedGithub = async path => path === 'issues/1/comments?per_page=100&page=1'
     ? Array.from({ length: 100 }, () => ({}))
     : path === 'issues/1/comments?per_page=100&page=2' ? [comment] : github([])(path);
-  assert.equal((await evidence(pagedGithub, context, base, read)).profile.id, id);
+  assert.equal((await evidence(pagedGithub, context, prBase, read)).profile.id, id);
 });
 
 test('PR #6 publishes success only after binding its App comment and capture profile', async () => {
   const recordedHead = pr6.head_sha;
   const recordedBase = pr6.envelope.previous;
+  const exhibitBase = { ref: 'exhibit/playwright', sha: recordedBase };
   const run = {
     id: 45724477522, path: '.github/workflows/ci.yml', event: 'pull_request', conclusion: 'success',
     head_sha: recordedHead, run_attempt: 1, head_repository: { full_name: repo }, pull_requests: [{ number: 6 }]
@@ -205,10 +207,11 @@ test('PR #6 publishes success only after binding its App comment and capture pro
     return { items: [item], pageInfo: { hasNextPage: false } };
   };
   const writes = [];
-  const github = appComment => async (path, body, method) => {
+  const github = (appComment, tip = recordedBase) => async (path, body, method) => {
     if (path === 'pulls/6') return {
-      state: 'open', head: { sha: recordedHead, repo: { full_name: repo } }, base: { ref: 'main', sha: recordedBase }
+      state: 'open', head: { sha: recordedHead, repo: { full_name: repo } }, base: { ...exhibitBase, sha: base }
     };
+    if (path === 'git/ref/heads/exhibit/playwright') return { object: { sha: tip } };
     if (path === `actions/runs/${run.id}`) return run;
     if (path === 'issues/6/comments?per_page=100&page=1') return [appComment];
     if (path === `actions/runs/${run.id}/attempts/1/jobs?per_page=100`) return {
@@ -226,10 +229,13 @@ test('PR #6 publishes success only after binding its App comment and capture pro
   assert.equal(writes[0].body.head_sha, recordedHead);
   assert.equal(writes[1].body.conclusion, 'success');
   assert.equal(writes[1].body.output.title, 'No new runtime behavior recorded');
+  assert.equal(writes[1].body.external_id, `6:exhibit/playwright:${recordedBase}`);
+  assert.ok(writes[1].body.output.summary.includes(`compared with \`${recordedBase}\``));
   assert.equal(await evidence(github({ ...comment, performed_via_github_app: { id: 1 } }),
-    request, recordedBase, readMcp(recordedProfile)), null);
-  assert.equal(await evidence(github(comment), request, recordedBase, readMcp({ ...recordedProfile, runAttempt: 2 })), null);
-  assert.equal(await evidence(github(comment), request, recordedBase, readMcp({ ...recordedProfile, id })), null);
+    request, exhibitBase, readMcp(recordedProfile)), null);
+  assert.equal(await evidence(github(comment), request, exhibitBase, readMcp({ ...recordedProfile, runAttempt: 2 })), null);
+  assert.equal(await evidence(github(comment), request, exhibitBase, readMcp({ ...recordedProfile, id })), null);
+  assert.equal(await evidence(github(comment, head), request, { ...exhibitBase, sha: base }, readMcp(recordedProfile)), null);
 });
 
 test('publishes head-bound checks; only observed changes hand work to Steward', async () => {
@@ -273,8 +279,9 @@ test('publishes head-bound checks; only observed changes hand work to Steward', 
     await publish(run, repo, gh, async (_gh, observed, baseline) => {
       assert.notEqual(state, 'ci-failed');
       assert.deepEqual(observed, context);
-      assert.equal(baseline, base);
-      return { verdict: ['superseded', 'retargeted'].includes(state) ? 'nothing-new' : state, url, profile: profile() };
+      assert.deepEqual(baseline, state === 'changed' ? { ...prBase, ref: 'exhibit/playwright' } : prBase);
+      return { verdict: ['superseded', 'retargeted'].includes(state) ? 'nothing-new' : state, url, profile: profile(),
+        comparisonBase: base };
     });
     assert.equal(conclusion, state === 'untracked-base' ? undefined :
       { 'nothing-new': 'success', 'background-only': 'success', changed: 'failure' }[state] ?? 'action_required');
@@ -304,13 +311,14 @@ test('waits for late current-head evidence and fails closed when the wait expire
       assert.equal(body.conclusion, conclusion);
       assert.equal(Date.now() - start, elapsed);
     };
-    const read = async () => Date.now() - start < availableAfter ? null : { verdict, url, profile: profile() };
+    const read = async () => Date.now() - start < availableAfter ? null : { verdict, url, profile: profile(), comparisonBase: base };
     assert.equal(await publish(run, repo, gh, read, async ms => t.mock.timers.tick(ms)),
       `garnet/runtime-diff: ${verdict} on ${head}`);
   }
 });
 
 test('retargeting invalidates only old passing runtime checks for the same PR and head', async () => {
+  const tip = 'c'.repeat(40);
   const pull = {
     number: 1, state: 'open', base: { ref: 'exhibit/playwright', sha: base },
     head: { sha: head, repo: { full_name: repo } }
@@ -324,13 +332,15 @@ test('retargeting invalidates only old passing runtime checks for the same PR an
   const writes = [];
   const gh = async (path, body, method) => {
     if (path === 'pulls/1') return pull;
+    if (path === 'git/ref/heads/exhibit/playwright') return { object: { sha: tip } };
     if (path === `commits/${head}/check-runs?check_name=garnet%2Fruntime-diff&filter=all&per_page=100&page=1`) return {
       check_runs: [
         outdated, { ...outdated, id: 2, external_id: '' },
         { ...outdated, id: 3, external_id: `1:exhibit/playwright:${base}` },
         { ...outdated, id: 4, app: { id: 1 } },
         { ...outdated, id: 5, output: { summary: outdated.output.summary.replace('/pull/1', '/pull/2') } },
-        { ...outdated, id: 6, conclusion: 'failure' }
+        { ...outdated, id: 6, conclusion: 'failure' },
+        { ...outdated, id: 7, external_id: `1:exhibit/playwright:${tip}` }
       ]
     };
     writes.push({ path, body, method });

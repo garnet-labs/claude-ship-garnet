@@ -148,8 +148,9 @@ export async function evidence(gh, context, base, call = mcp) {
   } catch {
     return null;
   }
-  const verdict = decide(marker, head, base);
-  if (verdict === 'unknown') return null;
+  const comparisonBase = marker?.previous;
+  const verdict = decide(marker, head, comparisonBase);
+  if (verdict === 'unknown' || !(await matchesBase(gh, base, comparisonBase))) return null;
 
   const result = await gh(`actions/runs/${run}/attempts/${attempt}/jobs?per_page=100`);
   if (!Array.isArray(result?.jobs) || result.total_count !== result.jobs.length) return null;
@@ -175,7 +176,7 @@ export async function evidence(gh, context, base, call = mcp) {
   }
   if (!linkedJob || profileIds.size !== 1) return null;
   const profile = await profileFor(context, [...profileIds][0], call);
-  return profile ? { verdict, profile, url: comment.html_url } : null;
+  return profile ? { verdict, profile, url: comment.html_url, comparisonBase } : null;
 }
 
 function selectors(repo, pr, head, run, attempt) {
@@ -198,6 +199,17 @@ function checkBase(pr, base) {
   return `${pr}:${base.ref}:${base.sha}`;
 }
 
+async function matchesBase(gh, base, comparisonBase) {
+  if (comparisonBase === base.sha) return true;
+  try {
+    const path = base.ref.split('/').map(encodeURIComponent).join('/');
+    const result = await gh(`git/ref/heads/${path}`);
+    return comparisonBase === result?.object?.sha;
+  } catch {
+    return false;
+  }
+}
+
 export async function invalidateRetargetedChecks(event, repo, gh) {
   const previous = event?.changes?.base?.ref?.from;
   const target = event?.pull_request?.base?.ref;
@@ -206,7 +218,7 @@ export async function invalidateRetargetedChecks(event, repo, gh) {
   if (!Number.isSafeInteger(pr) || pr <= 0 || !sha.test(head?.sha)) return;
   const pull = await gh(`pulls/${pr}`);
   if (!current(pull, { repo, head: head.sha }) || pull.base.ref !== target) return;
-  const currentBase = checkBase(pr, pull.base);
+  const basePrefix = `${pr}:${pull.base.ref}:`;
   const commentPrefix = `[Garnet Runtime Review](https://github.com/${repo}/pull/${pr}#issuecomment-`;
   let invalidated = 0;
   for (let page = 1; ; page++) {
@@ -214,8 +226,12 @@ export async function invalidateRetargetedChecks(event, repo, gh) {
     if (!Array.isArray(result?.check_runs)) throw new Error('GitHub did not return check runs');
     for (const check of result.check_runs) {
       if (check.name !== checkName || check.app?.id !== actionsAppId || check.conclusion !== 'success' ||
-          check.external_id === currentBase || !check.output?.summary?.startsWith(commentPrefix) ||
+          !check.output?.summary?.startsWith(commentPrefix) ||
           !Number.isSafeInteger(check.id) || check.id <= 0) continue;
+      if (check.external_id?.startsWith(basePrefix)) {
+        const comparisonBase = check.external_id.slice(basePrefix.length);
+        if (sha.test(comparisonBase) && await matchesBase(gh, pull.base, comparisonBase)) continue;
+      }
       await gh(`check-runs/${check.id}`, {
         status: 'completed', conclusion: 'action_required',
         output: { title: 'No usable runtime comparison', summary: 'The PR base changed. Waiting for a new capture and comparison.' }
@@ -234,7 +250,7 @@ export async function publish(run, repo, gh, readEvidence = evidence, pause = wa
   const getPR = () => gh(`pulls/${pr}`);
   const initial = await getPR();
   if (!current(initial, context)) return;
-  const base = initial.base.sha;
+  const base = initial.base;
   const check = await gh('check-runs', {
     name: checkName, head_sha: head, status: 'in_progress', external_id: checkBase(pr, initial.base),
     details_url: `https://github.com/${repo}/actions/runs/${run.id}`,
@@ -258,7 +274,8 @@ export async function publish(run, repo, gh, readEvidence = evidence, pause = wa
   }
   const latest = await getPR();
   const githubRun = await gh(`actions/runs/${run.id}`);
-  const active = current(latest, context) && sameBase(latest.base, initial.base) && matchesRun(githubRun, context);
+  const active = current(latest, context) && sameBase(latest.base, base) && matchesRun(githubRun, context) &&
+    (!result || await matchesBase(gh, base, result.comparisonBase));
   const verdict = active ? (result?.verdict ?? 'unknown') : 'superseded';
   const args = [repo, pr, head, run.id, run.run_attempt].join(' ');
   const conclusion = ['nothing-new', 'background-only'].includes(verdict) ? 'success' :
@@ -273,7 +290,7 @@ export async function publish(run, repo, gh, readEvidence = evidence, pause = wa
     ? {
       title: titles[verdict],
       summary: [
-        `[Garnet Runtime Review](${result.url}) · compared with \`${base}\` · capture is best-effort.`,
+        `[Garnet Runtime Review](${result.url}) · compared with \`${result.comparisonBase}\` · capture is best-effort.`,
         `Head \`${head}\` · Linux run \`${run.id}\` attempt \`${run.run_attempt}\` · MCP profile \`${result.profile.id}\`.`,
         ...(verdict === 'background-only' ? ['Garnet reported changes to connections not tied to a workflow step.'] : []),
         ...(verdict === 'changed' ? [`Steward receipt lookup selectors: \`${args}\`.`] : []),
@@ -281,7 +298,10 @@ export async function publish(run, repo, gh, readEvidence = evidence, pause = wa
       ].join('\n\n')
     }
     : { title: 'No usable runtime comparison', summary: 'No passing gate was issued. Do not attempt a code fix from this check.' };
-  await gh(`check-runs/${check.id}`, { status: 'completed', conclusion, output }, 'PATCH');
+  await gh(`check-runs/${check.id}`, {
+    status: 'completed', conclusion, output,
+    ...(active && result ? { external_id: checkBase(pr, { ...base, sha: result.comparisonBase }) } : {})
+  }, 'PATCH');
   return `${checkName}: ${verdict} on ${head}`;
 }
 
@@ -316,9 +336,10 @@ async function receipt(args) {
   const pull = await gh(`pulls/${context.pr}`);
   const githubRun = await gh(`actions/runs/${context.run}`);
   if (!current(pull, context) || !matchesRun(githubRun, context)) throw new Error('Selectors do not match the current PR head and capture run');
-  const result = await evidence(gh, context, pull.base.sha);
+  const result = await evidence(gh, context, pull.base);
   const latest = await gh(`pulls/${context.pr}`);
-  if (result?.verdict !== 'changed' || !current(latest, context) || !sameBase(latest.base, pull.base)) {
+  if (result?.verdict !== 'changed' || !current(latest, context) || !sameBase(latest.base, pull.base) ||
+      !(await matchesBase(gh, latest.base, result.comparisonBase))) {
     throw new Error('No current changed receipt is available');
   }
   console.log(JSON.stringify({
