@@ -39,7 +39,9 @@ missing/incomplete evidence, or Code Review feedback. Don't approve or merge.
    using the observed execution chain when available. If you cannot establish
    the cause from the evidence, leave the PR unchanged.
 4. Make the smallest fix that addresses the cause and preserves the PR's
-   stated intent. Don't weaken checks, capture, or review policy. Run the
-   relevant checks and verify the evidence still applies to the current remote
-   PR head before pushing. Report the MCP profile ID, observed behavior, and
+   stated intent. Don't change workflows, tests, policy, checks, or
+   instructions, and don't weaken checks, capture, or review policy.
+   Run `npm ci --ignore-scripts --no-audit --no-fund` and `npm run build`,
+   then verify the evidence still applies to the current remote PR head
+   before pushing. Report the MCP profile ID, observed behavior, and
    what you changed.
