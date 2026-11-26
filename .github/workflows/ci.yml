@@ -29,7 +29,9 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Build
-        run: npm run build
+        run: |
+          npx --no-install playwright install chromium --only-shell
+          npm run build
       - name: Let sensor settle
         if: always()
         run: sleep 30
