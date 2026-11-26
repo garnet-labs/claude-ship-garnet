@@ -37,7 +37,7 @@ jobs:
   publish:
     if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.display_title != 'CI (metadata edit)'
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 50
     permissions:
       actions: read
       checks: write
