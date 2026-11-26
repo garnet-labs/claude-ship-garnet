@@ -6,6 +6,10 @@
   "workspaces": ["packages/*"],
   "scripts": {
     "build": "node build.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "test:sentry-cli": "sentry-cli --version"
+  },
+  "devDependencies": {
+    "@sentry/cli": "3.8.1"
   }
 }
