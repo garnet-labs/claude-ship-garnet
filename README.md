@@ -1,10 +1,9 @@
 # Claude Ship × Garnet: one-PR exhibit
 
-One PR, three manifest-only heads: a routine dependency update → a release
-that adds a no-data build request → a Steward rollback of just that release.
-The exhibit uses local npm release tarballs, with readable fixture sources.
-Nothing is published to npm; ordinary `npm ci` installs the selected release
-with the lockfile's integrity hash. Public GitHub CI needs no Garnet secrets.
+One PR tests whether a dependency version change passes code review but
+changes what CI reaches at runtime. Playwright's browser installer follows a
+different download redirect after the upgrade, without changing the test or
+build commands. Public GitHub CI needs no Garnet secrets.
 
 ## What this tests
 
@@ -44,47 +43,40 @@ production security boundary: an actor who can run a workflow with
    Once its decisions match the exhibit, remove `mode: observe` in a separate
    reviewed PR. Observe mode cannot post an approving review.
 5. In [GitHub's branch rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#require-status-checks-to-pass),
-   require both **Claude Approvals** (Claude app) and **garnet/runtime-diff**
-   (GitHub Actions) on `main`; require branches to be current and dismiss
-   stale reviews on push. Follow [Steward's branch rules](https://code.claude.com/docs/en/pr-steward-setup#require-reviews-with-branch-rules)
-   and don't grant the app a bypass. Leave auto-merge off for the exhibit.
-   This adapter intentionally won't pass a comparison with an older base
-   ancestor or multiple captured jobs.
+   keep the existing rules on `main`. For the exhibit, require
+   **garnet/runtime-diff** (GitHub Actions) on `exhibit/playwright` and
+   require topic branches to be current. Do not grant a bypass or enable
+   auto-merge for the exhibit. This adapter won't pass a comparison with an
+   older base ancestor or multiple captured jobs.
 
 ## Replay on one PR
 
-Start from the recorded `main` and create a topic branch. For the first head:
+Use the `exhibit/playwright` branch as the baseline. It pins Playwright 1.56.1
+and runs its ordinary Chromium headless install in the captured build.
+The baseline stays off `main`, where the existing gate would reject the
+initial addition of the browser download. Wait for a successful instrumented
+run on the exact exhibit base commit, then branch from it and update only
+Playwright:
 
 ```sh
-npm version 1.0.1 --workspace @exhibit/format-label --no-git-tag-version
-npm pkg set 'dependencies.@exhibit/normalize-label=file:../../fixtures/npm/exhibit-normalize-label-1.0.1.tgz' --workspace @exhibit/format-label
-npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+npm install --workspace @exhibit/format-label --save-dev --save-exact --package-lock-only --ignore-scripts --no-audit --no-fund playwright@1.57.0
 git add package-lock.json packages/format-label/package.json
-git commit -m 'chore: update normalize-label and bump format-label'
+git commit -m 'chore(deps): bump Playwright to 1.57.0'
 ```
 
-Open a ready PR. Save the App comment permalink, `garnet/runtime-diff` check,
-and the Claude review for the exact head. Expect the check to say **No new
-runtime behavior recorded** if the recorded comparison found no delta. Only
-claim a Claude approval if GitHub shows the approving review at this head.
+Open a ready PR into `exhibit/playwright`. Only the workspace manifest and
+lockfile should differ.
+Save the App comment permalink, `garnet/runtime-diff` check, and Claude
+review for the exact head. The ordinary build should succeed. Verify
+separately whether Claude passes the diff, Approvals would approve it in
+observe mode, and the runtime gate blocks the merge. Only claim an approval
+if GitHub shows the approving review at this head.
 
-For the second head, select the 1.0.2 release. Only the manifest and lockfile
-change. The already-present fixture sends a HEAD request to `example.com`
-during Build, without user, repo, or build data, and ignores network errors:
-
-```sh
-npm pkg set 'dependencies.@exhibit/normalize-label=file:../../fixtures/npm/exhibit-normalize-label-1.0.2.tgz' --workspace @exhibit/format-label
-npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-git add package-lock.json packages/format-label/package.json
-git commit -m 'chore: bump normalize-label to 1.0.2'
-```
-
-Push, then expect the ordinary build to succeed and the custom runtime check to fail
-with **Runtime behavior changed**. Watch for a Steward-authored reply naming
-the exact MCP profile and a Steward commit reselecting 1.0.1 while retaining
-the workspace bump. Check the final head's GitHub diff, Garnet comparison,
-and Claude review separately. The release source is not in the PR diff;
-a reviewer can still inspect the installed archive or its checked-in source.
+Watch for a Steward-authored reply naming the exact MCP profile and a
+Steward-authored change. The skill specifies how to read evidence, not
+which package or version to edit. Check the final head's diff, profile and
+required check separately. The download implementation is outside the PR
+diff; a reviewer can still inspect the upstream dependency and release notes.
 If you arm Steward with `@claude steward`, report the manual trigger; if a
 person pushes the correction, do not report it as a Steward fix.
 
@@ -93,10 +85,6 @@ Rerun the capture if the profile is unavailable. A passing check means only
 that no new behavior or removals were recorded in this comparison.
 Removal-only comparisons stay blocked for human review without requesting a
 Steward fix.
-
-To reproduce a release tarball, use
-`npm pack ./fixtures/npm/source/<version> --ignore-scripts --pack-destination fixtures/npm`
-with the npm version used by the exhibit.
 
 ## Local checks
 

@@ -150,7 +150,7 @@ test('the trusted App comparison pins the capture attempt and exact MCP profile'
 });
 
 test('publishes head-bound checks; only observed changes hand work to Steward', async () => {
-  for (const state of ['nothing-new', 'changed', 'removals-only', 'ci-failed', 'superseded']) {
+  for (const state of ['nothing-new', 'changed', 'removals-only', 'ci-failed', 'superseded', 'retargeted', 'untracked-base']) {
     const run = {
       id: 2, path: '.github/workflows/ci.yml', event: 'pull_request', head_sha: head,
       run_attempt: 1, head_repository: { full_name: repo }, pull_requests: [{ number: 1 }],
@@ -160,9 +160,12 @@ test('publishes head-bound checks; only observed changes hand work to Steward', 
     let conclusion;
     const gh = async (path, payload, method) => {
       if (path === 'pulls/1') {
+        reads++;
+        const ref = state === 'untracked-base' ? 'other' :
+          state === 'changed' || (state === 'retargeted' && reads >= 3) ? 'exhibit/playwright' : 'main';
         return {
-          state: 'open', base: { sha: base, ref: 'main' },
-          head: { sha: ++reads >= 3 && state === 'superseded' ? base : head, repo: { full_name: repo } }
+          state: 'open', base: { sha: base, ref },
+          head: { sha: reads >= 3 && state === 'superseded' ? base : head, repo: { full_name: repo } }
         };
       }
       if (path === 'check-runs') {
@@ -183,9 +186,11 @@ test('publishes head-bound checks; only observed changes hand work to Steward', 
       assert.notEqual(state, 'ci-failed');
       assert.deepEqual(observed, context);
       assert.equal(baseline, base);
-      return { verdict: state === 'superseded' ? 'nothing-new' : state, url, profile: profile() };
+      return { verdict: ['superseded', 'retargeted'].includes(state) ? 'nothing-new' : state, url, profile: profile() };
     });
-    assert.equal(conclusion, { 'nothing-new': 'success', changed: 'failure' }[state] ?? 'action_required');
+    assert.equal(conclusion, state === 'untracked-base' ? undefined :
+      { 'nothing-new': 'success', changed: 'failure' }[state] ?? 'action_required');
+    if (state === 'untracked-base') assert.equal(reads, 1);
   }
 });
 

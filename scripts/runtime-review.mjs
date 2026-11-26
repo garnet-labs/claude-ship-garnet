@@ -10,6 +10,7 @@ const profileID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const captureWorkflow = '.github/workflows/ci.yml';
 const captureJob = 'runtime-build';
 const checkName = 'garnet/runtime-diff';
+const supportedBases = new Set(['main', 'exhibit/playwright']);
 const endpoint = 'https://api.garnet.ai/api/v2/mcp';
 const exec = promisify(execFile);
 
@@ -172,8 +173,12 @@ function selectors(repo, pr, head, run, attempt) {
 
 function current(pull, context) {
   return pull.state === 'open' && pull.head?.sha === context.head &&
-    pull.head.repo?.full_name === context.repo && pull.base?.ref === 'main' &&
+    pull.head.repo?.full_name === context.repo && supportedBases.has(pull.base?.ref) &&
     sha.test(pull.base.sha);
+}
+
+function sameBase(left, right) {
+  return left?.ref === right?.ref && left?.sha === right?.sha;
 }
 
 export async function publish(run, repo, gh, readEvidence = evidence) {
@@ -195,7 +200,8 @@ export async function publish(run, repo, gh, readEvidence = evidence) {
     const deadline = Date.now() + 480_000;
     for (let tries = 0; tries < 24 && !result && Date.now() < deadline; tries++) {
       if (tries > 0) await wait(15_000);
-      if (!current(await getPR(), context)) break;
+      const pull = await getPR();
+      if (!current(pull, context) || !sameBase(pull.base, initial.base)) break;
       try {
         result = await readEvidence(gh, context, base);
       } catch {
@@ -205,7 +211,7 @@ export async function publish(run, repo, gh, readEvidence = evidence) {
   }
   const latest = await getPR();
   const githubRun = await gh(`actions/runs/${run.id}`);
-  const active = current(latest, context) && latest.base.sha === base && matchesRun(githubRun, context);
+  const active = current(latest, context) && sameBase(latest.base, initial.base) && matchesRun(githubRun, context);
   const verdict = active ? (result?.verdict ?? 'unknown') : 'superseded';
   const args = [repo, pr, head, run.id, run.run_attempt].join(' ');
   const conclusion = verdict === 'nothing-new' ? 'success' : verdict === 'changed' ? 'failure' : 'action_required';
@@ -256,7 +262,7 @@ async function receipt(args) {
   if (!current(pull, context) || !matchesRun(githubRun, context)) throw new Error('Selectors do not match the current PR head and capture run');
   const result = await evidence(gh, context, pull.base.sha);
   const latest = await gh(`pulls/${context.pr}`);
-  if (result?.verdict !== 'changed' || !current(latest, context) || latest.base.sha !== pull.base.sha) {
+  if (result?.verdict !== 'changed' || !current(latest, context) || !sameBase(latest.base, pull.base)) {
     throw new Error('No current changed receipt is available');
   }
   console.log(JSON.stringify({
