@@ -9,6 +9,7 @@
     "test": "node --test"
   },
   "devDependencies": {
-    "@sentry/cli": "3.8.1"
+    "@sentry/cli": "3.8.1",
+    "cypress": "16.4.0"
   }
 }
