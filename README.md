@@ -1,9 +1,9 @@
 # Claude Ship × Garnet: one-PR exhibit
 
-One dependency bump, three heads: manifest only → the same bump with a no-data
-build callout → a correction that keeps the bump and removes the callout.
-The fixture uses a private npm workspace package (not a published package);
-the GitHub repository is public so the demo needs no Garnet secrets.
+One PR tests whether a dependency version change passes code review but
+changes what CI reaches at runtime. Playwright's browser installer follows a
+different download redirect after the upgrade, without changing the test or
+build commands. Public GitHub CI needs no Garnet secrets.
 
 ## What this tests
 
@@ -15,9 +15,10 @@ the GitHub repository is public so the demo needs no Garnet secrets.
 | [PR Steward](https://code.claude.com/docs/en/pr-steward#what-pr-steward-fixes) | Works from a real failed GitHub check. The checked-in skill tells it to read the exact hosted MCP profile before making a narrow fix. | Treat missing evidence as a fix request. |
 
 The custom check runs from the default branch after CI. It executes no PR
-code and downloads no PR artifacts. It uses the public Garnet MCP `outcome`
-and `profiles` tools, verifies the linked Garnet App comment, and requires the
-current head, exact base commit, run, attempt, and recorded job to agree.
+code and downloads no PR artifacts. It reads the finalized Garnet App comment
+directly from GitHub, then reads the referenced record using the public Garnet
+MCP `profiles` tool. The head, exact base, run, attempt, job and profile must
+agree. The publisher and Steward don't need the MCP PR-outcome lookup.
 The exhibit is for trusted same-repository branches, not fork PRs or a
 production security boundary: an actor who can run a workflow with
 `checks: write` as GitHub Actions shares the check's source identity.
@@ -42,46 +43,51 @@ production security boundary: an actor who can run a workflow with
    Once its decisions match the exhibit, remove `mode: observe` in a separate
    reviewed PR. Observe mode cannot post an approving review.
 5. In [GitHub's branch rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#require-status-checks-to-pass),
-   require both **Claude Approvals** (Claude app) and **garnet/runtime-diff**
-   (GitHub Actions) on `main`; require branches to be current and dismiss
-   stale reviews on push. Follow [Steward's branch rules](https://code.claude.com/docs/en/pr-steward-setup#require-reviews-with-branch-rules)
-   and don't grant the app a bypass. Leave auto-merge off for the exhibit.
-   This adapter intentionally won't pass a comparison with an older base
-   ancestor or multiple captured jobs.
+   keep the existing rules on `main`. For the exhibit, require
+   **garnet/runtime-diff** (GitHub Actions) on `exhibit/playwright` and
+   require topic branches to be current. Do not grant a bypass or enable
+   auto-merge for the exhibit. This adapter won't pass a comparison with an
+   older base ancestor or multiple captured jobs.
 
 ## Replay on one PR
 
-Start from the recorded `main` and create a topic branch. For the first head:
+Use [`exhibit/playwright`](https://github.com/garnet-labs/claude-ship-garnet/tree/exhibit/playwright)
+as the baseline. To create this baseline on a fresh install, branch from the
+merged setup, then pin the browser dependency:
 
 ```sh
-npm version 1.0.1 --workspace @exhibit/format-label --no-git-tag-version
+git switch -c exhibit/playwright
+npm install --workspace @exhibit/format-label --save-dev --save-exact --package-lock-only --ignore-scripts --no-audit --no-fund playwright@1.56.1
+```
+
+On that branch only, set the captured `runtime-build` runner to
+`ubuntu-24.04` and add `npx --no-install playwright install chromium --only-shell`
+before `npm run build` in the existing **Build** step. Commit and publish the
+branch, record its exact push run, then apply the exhibit branch rule. This
+keeps the intentional first browser download off protected `main`.
+
+After the baseline run succeeds, create a topic branch from that exact commit
+and update only Playwright:
+
+```sh
+npm install --workspace @exhibit/format-label --save-dev --save-exact --package-lock-only --ignore-scripts --no-audit --no-fund playwright@1.57.0
 git add package-lock.json packages/format-label/package.json
-git commit -m 'chore: bump format-label to 1.0.1'
+git commit -m 'chore(deps): bump Playwright to 1.57.0'
 ```
 
-Open a ready PR. Save the App comment permalink, `garnet/runtime-diff` check,
-and the Claude review for the exact head. Expect the check to say **No new
-runtime behavior recorded** if the recorded comparison found no delta. Only
-claim a Claude approval if GitHub shows the approving review at this head.
+Open a ready PR into `exhibit/playwright`. Only the workspace manifest and
+lockfile should differ.
+Save the App comment permalink, `garnet/runtime-diff` check, and Claude
+review for the exact head. The ordinary build should succeed. Verify
+separately whether Claude passes the diff, Approvals would approve it in
+observe mode, and the runtime gate blocks the merge. Only claim an approval
+if GitHub shows the approving review at this head.
 
-For the second head, edit `packages/format-label/index.mjs` to use this
-fixture, commit, and push. It sends no user, repo, or build data and ignores
-network errors so the build test alone cannot detect the callout:
-
-```js
-export async function formatLabel(label) {
-  await fetch('https://example.com/', {
-    method: 'HEAD',
-    signal: AbortSignal.timeout(5000)
-  }).catch(() => {});
-  return label.trim().toLowerCase();
-}
-```
-
-Expect the ordinary build to succeed and the custom runtime check to fail
-with **Runtime behavior changed**. Watch for a Steward-authored reply naming
-the exact MCP profile and a Steward commit removing only the callout. Check
-the final head's GitHub diff, Garnet comparison, and Claude review separately.
+Watch for a Steward-authored reply naming the exact MCP profile and a
+Steward-authored change. The skill specifies how to read evidence, not
+which package or version to edit. Check the final head's diff, profile and
+required check separately. The download implementation is outside the PR
+diff; a reviewer can still inspect the upstream dependency and release notes.
 If you arm Steward with `@claude steward`, report the manual trigger; if a
 person pushes the correction, do not report it as a Steward fix.
 
