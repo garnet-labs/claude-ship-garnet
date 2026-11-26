@@ -289,6 +289,31 @@ test('publishes head-bound checks; only observed changes hand work to Steward', 
   }
 });
 
+test('publishes the blocking check for the build canary exhibit base', async () => {
+  const canaryBase = { ...prBase, ref: 'exhibit/build-canary' };
+  const run = {
+    id: 2, path: '.github/workflows/ci.yml', event: 'pull_request', head_sha: head,
+    run_attempt: 1, head_repository: { full_name: repo }, pull_requests: [{ number: 1 }],
+    conclusion: 'success'
+  };
+  const gh = async (path, payload, method) => {
+    if (path === 'pulls/1') return { state: 'open', base: canaryBase, head: { sha: head, repo: { full_name: repo } } };
+    if (path === 'actions/runs/2') return run;
+    assert.equal(payload.external_id, `1:exhibit/build-canary:${base}`);
+    if (path === 'check-runs') return { id: 57 };
+    assert.equal(path, 'check-runs/57');
+    assert.equal(method, 'PATCH');
+    assert.equal(payload.conclusion, 'failure');
+    assert.equal(payload.output.title, 'Runtime behavior changed');
+  };
+  const result = await publish(run, repo, gh, async (_gh, observed, baseline) => {
+    assert.deepEqual(observed, context);
+    assert.deepEqual(baseline, canaryBase);
+    return { verdict: 'changed', url, profile: profile(), comparisonBase: base };
+  });
+  assert.equal(result, `garnet/runtime-diff: changed on ${head}`);
+});
+
 test('waits for late current-head evidence and fails closed when the wait expires', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: 0 });
   const run = {
