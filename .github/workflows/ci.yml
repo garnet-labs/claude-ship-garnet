@@ -2,9 +2,9 @@
 name: CI
 on:
   push:
-    branches: [main, exhibit/playwright]
+    branches: [main, exhibit/playwright, exhibit/build-canary]
   pull_request:
-    branches: [main, exhibit/playwright]
+    branches: [main, exhibit/playwright, exhibit/build-canary]
     types: [opened, synchronize, reopened]
 
 permissions: {}

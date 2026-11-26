@@ -4,7 +4,7 @@ on:
     workflows: [CI]
     types: [completed]
   pull_request_target:
-    branches: [main, exhibit/playwright]
+    branches: [main, exhibit/playwright, exhibit/build-canary]
     types: [edited]
 
 permissions: {}
