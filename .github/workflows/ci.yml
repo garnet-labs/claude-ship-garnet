@@ -5,12 +5,16 @@ on:
     branches: [main, exhibit/playwright]
   pull_request:
     branches: [main, exhibit/playwright]
+    types: [opened, synchronize, reopened, edited]
 
 permissions: {}
 
 jobs:
   runtime-build:
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event_name == 'push' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.action != 'edited' || github.event.changes.base.ref.from != null))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -35,6 +39,7 @@ jobs:
         run: sleep 30
 
   adapter-tests:
+    if: github.event.action != 'edited' || github.event.changes.base.ref.from != null
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
