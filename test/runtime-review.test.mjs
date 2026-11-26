@@ -290,6 +290,7 @@ test('waits for late current-head evidence and fails closed when the wait expire
   };
   for (const [availableAfter, verdict, conclusion, elapsed] of [
     [32 * 60_000, 'changed', 'failure', 32 * 60_000],
+    [45 * 60_000 - 1, 'changed', 'failure', 45 * 60_000],
     [Infinity, 'unknown', 'action_required', 45 * 60_000]
   ]) {
     const start = Date.now();

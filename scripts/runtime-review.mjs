@@ -243,7 +243,7 @@ export async function publish(run, repo, gh, readEvidence = evidence, pause = wa
   let result = null;
   if (run.conclusion === 'success') {
     const deadline = Date.now() + evidenceTimeoutMs;
-    while (!result && Date.now() < deadline) {
+    while (true) {
       const pull = await getPR();
       if (!current(pull, context) || !sameBase(pull.base, initial.base)) break;
       try {
@@ -252,7 +252,8 @@ export async function publish(run, repo, gh, readEvidence = evidence, pause = wa
         console.log('Garnet evidence not readable yet.');
       }
       const remaining = deadline - Date.now();
-      if (!result && remaining > 0) await pause(Math.min(evidencePollMs, remaining));
+      if (result || remaining <= 0) break;
+      await pause(Math.min(evidencePollMs, remaining));
     }
   }
   const latest = await getPR();
